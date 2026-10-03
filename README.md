@@ -1,0 +1,118 @@
+# 7LABZ Invoicing
+
+Estimates, invoices, payments, recurring billing and receivables reporting for 7LABZ.
+Node 22, SQLite, zero npm dependencies.
+
+```sh
+npm run seed     # optional: demo clients, invoices, payments, a retainer
+npm start        # http://127.0.0.1:7777
+npm test         # 30 tests: money math, lifecycle, HTTP, auth
+```
+
+## What it does
+
+**Documents.** Invoices and estimates share one editor and one totals engine.
+Lines carry quantity (three decimals), unit, rate, line discount and a tax rate.
+A document takes a percent or fixed discount, spread back across the lines
+before tax. Estimates convert into draft invoices.
+
+**Lifecycle.** `draft → issued → void` for invoices. `draft → issued → accepted | declined → converted` for estimates.
+Display status (`sent`, `partial`, `paid`, `overdue`, `expired`) is derived on
+every read and never stored, so it cannot go stale.
+
+- Numbers are assigned **at issue**, sequentially, with no gaps: `7LZ-2026-0001`, `EST-2026-0001`.
+  Deleting a draft burns nothing. Prefix, padding and yearly reset are configurable, and the
+  next number can be moved forward when moving over from another system.
+- Issuing freezes the client's address and the business details onto the document.
+- An issued invoice can be edited until it takes a payment. Every revision is logged with
+  before and after totals. After a payment, void and reissue instead.
+- Voiding needs a zero paid balance and keeps the number in the ledger.
+
+**Payments.** Partial payments, refunds (negative entries, capped at what was paid),
+eight methods, references, and removal with an audit entry. Overpayment is refused.
+
+**Recurring.** Weekly, monthly or yearly schedules, every N periods. A schedule anchored
+on the 31st bills Feb 28 and then Mar 31. It stops at an end date or after N invoices,
+and creates drafts or issues them automatically. The server catches up on start (at most
+24 periods) and checks hourly. Reactivating a paused schedule skips the dormant periods.
+
+**Clients.** Billing defaults (currency, terms, tax), CC addresses, internal notes,
+lifetime totals per currency, and a statement with a running balance and an opening
+balance for any date range. Clients with history are archived, never deleted.
+
+**Reports.** Dashboard KPIs, twelve-month invoiced vs. collected, AR aging
+(current / 1–30 / 31–60 / 61–90 / 90+) by client, tax collected per rate (accrual
+basis), top clients. CSV exports for invoices, estimates and payments, plus a full JSON backup.
+
+**Sharing.** Each issued document has a read-only link (`/p/<token>`) for the client,
+with print and save-as-PDF. Drafts are never public. The link can be replaced, which
+kills the old one. The email action opens your mail app with the link and logs the send.
+
+## Money rules
+
+- Amounts are integers in the currency's minor unit (cents, pence; JPY has none, BHD has three).
+  Floats never touch a stored amount. Products are computed in BigInt.
+- Rounding is half away from zero, at three points only: line gross, line discount, and
+  tax **once per rate** (not per line, so ten lines cannot drift by ten roundings).
+- Tax rates are stored in parts per million, so 8.875% is exact. Line discounts use basis points.
+- Currencies are never converted or summed together. Every report groups by currency.
+- The totals engine (`public/js/lib/calc.js`) is one pure module, shared by the browser's
+  live preview and the server's stored figures.
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `PORT` | `7777` | |
+| `HOST` | `127.0.0.1` | Any other host requires `INVOICE_PASSWORD`. |
+| `DB_PATH` | `data/invoicing.db` | SQLite, WAL mode. Back up this file, or use Reports → Full backup. |
+| `INVOICE_PASSWORD` | unset | Turns on sign-in. Sessions are HMAC-signed, HttpOnly, SameSite=Strict cookies, valid for 7 days. Five failures lock an IP out for 15 minutes. |
+| `SESSION_SECRET` | random per start | Set it to keep sessions across restarts. |
+| `COOKIE_SECURE` | unset | `1` behind HTTPS. |
+
+Writes accept JSON only and refuse cross-site requests (`Sec-Fetch-Site`). The CSP allows
+only same-origin scripts, plus Google Fonts.
+
+## Layout
+
+```
+src/
+  server.js            entry: HTTP server, hourly recurring run
+  app.js               router, auth, static files, error mapping
+  db.js                schema migrations (PRAGMA user_version), nested transactions
+  validate.js          field-level validation; every error reported at once
+  services/            settings, numbering, catalog, clients, documents, recurring, reports, exports
+public/
+  index.html, share.html
+  css/app.css          7LABZ tokens → base → components → document → print
+  js/lib/              money, dates, calc, doc-render — shared with the server
+  js/views/            one module per screen
+scripts/seed.js        demo data
+test/                  node:test suites
+```
+
+## API
+
+JSON over `/api`. Money goes **in** as decimal strings in major units (`"1250.00"`) and comes
+**out** as integers in minor units, next to a `currency`. Validation failures return `422`
+with `details` keyed by field, using `lines.N.field` for line items.
+
+| | |
+|---|---|
+| `GET/POST /documents`, `GET/PUT/DELETE /documents/:id` | `?kind=invoice\|estimate&status=open\|overdue\|…&client_id&q&from&to&sort&order&limit&offset` |
+| `POST /documents/:id/{issue,void,duplicate,accept,decline,convert,share,sent}` | lifecycle actions |
+| `POST /documents/:id/payments`, `DELETE /payments/:id`, `GET /payments` | `{ amount, date, method, reference, note, refund }` |
+| `GET /documents/:id/activity` | audit trail |
+| `/clients`, `/clients/:id/statement`, `/items`, `/tax-rates` | CRUD; deletes archive when there is history |
+| `/recurring`, `POST /recurring/run`, `POST /recurring/:id/run` | schedules |
+| `/reports/{dashboard,aging,revenue,tax,clients}` | reporting |
+| `/export/{invoices,estimates,payments}.csv`, `/export/backup.json` | exports |
+| `GET/PUT /settings`, `PUT /sequences/:kind` | business profile, numbering, defaults |
+| `GET /public/:token` | the client-facing view (no auth, no internal fields) |
+
+## Brand
+
+The UI follows the 7LABZ system: near-black `#0A0A0A` surfaces, hairline borders, gold kept
+to one element per section (the primary action's arrow, the outstanding figure, the balance
+due), and Syne with DM Mono. Status is shown in weight and line style, not color. Documents
+print on brand surfaces with `print-color-adjust: exact`.
