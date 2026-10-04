@@ -1,6 +1,7 @@
 import { api, esc, pageHead, state, toast, dialog, confirmDialog, showErrors, clearErrors, field, input, select, textarea } from '../ui.js';
 import { ppmToPercent, isCurrency } from '../lib/money.js';
-import { COMMON_CURRENCIES } from './documents.js';
+import { COMMON_CURRENCIES, bindSaveKeys } from './documents.js';
+import { setLeaveGuard } from '../ui.js';
 
 export async function settingsView({ el, refresh }) {
   const [s, taxRates, meta] = await Promise.all([api('/settings'), api('/tax-rates?archived=1'), api('/meta')]);
@@ -10,7 +11,7 @@ export async function settingsView({ el, refresh }) {
   const currencies = [...new Set([d.currency, ...COMMON_CURRENCIES])].filter(isCurrency);
 
   el.innerHTML = `
-    ${pageHead('Settings', 'Business and defaults', '<button class="cta" type="submit" form="settings-form">Save settings</button>')}
+    ${pageHead('Settings', 'Business and defaults', '<button class="cta" type="submit" form="settings-form" data-mode="save">Save settings</button>')}
 
     <form id="settings-form" novalidate>
       <section class="section">
@@ -70,6 +71,10 @@ export async function settingsView({ el, refresh }) {
     </section>`;
 
   const form = el.querySelector('#settings-form');
+  let dirty = false;
+  form.addEventListener('input', () => (dirty = true));
+  setLeaveGuard(() => dirty);
+  bindSaveKeys(form, 'save');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     clearErrors(form);
@@ -83,6 +88,7 @@ export async function settingsView({ el, refresh }) {
     }
     try {
       state.settings = await api('/settings', { method: 'PUT', body });
+      dirty = false;
       state.meta = await api('/meta');
       toast('Settings saved');
       refresh();

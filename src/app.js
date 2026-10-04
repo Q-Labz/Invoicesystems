@@ -10,7 +10,7 @@ import { settingsService } from './services/settings.js';
 import { numberingService } from './services/numbering.js';
 import { taxRatesService, itemsService } from './services/catalog.js';
 import { clientsService } from './services/clients.js';
-import { documentsService, PAYMENT_METHODS } from './services/documents.js';
+import { documentsService, PAYMENT_METHODS, DOC_VIEW } from './services/documents.js';
 import { recurringService } from './services/recurring.js';
 import { reportsService } from './services/reports.js';
 import { exportsService } from './services/exports.js';
@@ -186,7 +186,9 @@ function buildRoutes(ctx, auth) {
     today: ctx.today(),
     payment_methods: PAYMENT_METHODS,
     next_numbers: { invoice: ctx.numbering.preview('invoice'), estimate: ctx.numbering.preview('estimate') },
+    badges: badges(ctx),
   }));
+  add('GET', '/api/search', ({ query }) => ctx.documents.search(query.q));
 
   // settings
   add('GET', '/api/settings', () => ctx.settings.get());
@@ -270,6 +272,19 @@ function buildRoutes(ctx, auth) {
     file(`7labz-invoicing-${ctx.today()}.json`, 'application/json', JSON.stringify(ctx.exports.backup(), null, 2)));
 
   return r;
+}
+
+// Small counts for the sidebar: what needs a hand on it today.
+function badges(ctx) {
+  return ctx.db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN kind = 'invoice' AND status = 'overdue' THEN 1 ELSE 0 END) AS overdue,
+         SUM(CASE WHEN kind = 'invoice' AND status = 'draft' THEN 1 ELSE 0 END) AS drafts,
+         SUM(CASE WHEN kind = 'estimate' AND status = 'sent' THEN 1 ELSE 0 END) AS open_estimates
+       FROM (${DOC_VIEW}) v`,
+    )
+    .get({ today: ctx.today() });
 }
 
 function publicView(ctx, token) {

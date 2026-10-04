@@ -1,6 +1,6 @@
 import { api, esc, money, date, pageHead, empty, qs, go, download } from '../ui.js';
 import { methodLabel } from '../lib/doc-render.js';
-import { rowLinks } from './dashboard.js';
+import { rowLinks } from '../ui.js';
 
 export async function paymentsView({ el, query }) {
   const rows = await api(`/payments${qs({ from: query.from, to: query.to, limit: 500 })}`);

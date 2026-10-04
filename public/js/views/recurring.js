@@ -1,7 +1,7 @@
-import { api, esc, money, date, pageHead, empty, state, toast, confirmDialog, showErrors, clearErrors, field, input, select, textarea, go } from '../ui.js';
+import { api, esc, money, date, pageHead, empty, state, toast, confirmDialog, showErrors, clearErrors, field, input, select, textarea, go, setLeaveGuard } from '../ui.js';
 import { isCurrency } from '../lib/money.js';
-import { rowLinks } from './dashboard.js';
-import { COMMON_CURRENCIES } from './documents.js';
+import { rowLinks } from '../ui.js';
+import { COMMON_CURRENCIES, bindSaveKeys } from './documents.js';
 import { linesMarkup, discountMarkup, mountLineEditor, linesToModel, discountToModel, blankLine } from './line-editor.js';
 
 const UNITS = { week: ['week', 'weeks'], month: ['month', 'months'], year: ['year', 'years'] };
@@ -71,7 +71,7 @@ export async function recurringEditView({ el, refresh }, id) {
       <a class="btn btn-quiet" href="#/recurring">Back</a>
       ${r?.active ? '<button class="btn" type="button" data-run-now>Generate next now</button>' : ''}
       ${r ? `<button class="btn btn-quiet" type="button" data-remove>${generated?.count ? 'Stop' : 'Delete'}</button>` : ''}
-      <button class="cta" type="submit" form="rec-form">${r ? 'Save schedule' : 'Start schedule'}</button>`)}
+      <button class="cta" type="submit" form="rec-form" data-mode="save">${r ? 'Save schedule' : 'Start schedule'}</button>`)}
 
     <form id="rec-form" class="editor" novalidate autocomplete="off">
       <div>
@@ -117,7 +117,10 @@ export async function recurringEditView({ el, refresh }, id) {
 
   const form = el.querySelector('#rec-form');
   const f = (n) => form.elements.namedItem(n);
-  const editor = mountLineEditor(form, { lines: model.lines, items });
+  let dirty = false;
+  const editor = mountLineEditor(form, { lines: model.lines, items, onDirty: () => (dirty = true) });
+  setLeaveGuard(() => dirty);
+  bindSaveKeys(form, 'save');
 
   f('client_id').addEventListener('change', () => {
     const c = clients.find((x) => x.id === Number(f('client_id').value));
@@ -151,6 +154,7 @@ export async function recurringEditView({ el, refresh }, id) {
     if (r) body.active = f('active').checked;
     try {
       const saved = await api(r ? `/recurring/${r.id}` : '/recurring', { method: r ? 'PUT' : 'POST', body });
+      dirty = false;
       toast(r ? 'Schedule saved' : 'Schedule started');
       if (r) refresh();
       else go(`/recurring/${saved.id}`);

@@ -245,6 +245,29 @@ test('reports: dashboard, revenue, tax, CSV, backup', async () => {
   assert.ok(backup.data.documents.length > 0);
 });
 
+test('ux endpoints: search, tab counts, badges, reminders', async () => {
+  const found = await ok(get('/search?q=7LZ-2026-0001'));
+  assert.equal(found.documents[0].number, '7LZ-2026-0001');
+  const byClient = await ok(get('/search?q=halden'));
+  assert.ok(byClient.clients.length >= 1);
+  assert.deepEqual(await ok(get('/search?q=')), { documents: [], clients: [] });
+
+  const list = await ok(get('/documents?kind=invoice&status=paid'));
+  assert.ok(list.status_counts.all >= list.count, 'tab counts ignore the status filter');
+  assert.equal(list.status_counts.open, (list.status_counts.sent || 0) + (list.status_counts.partial || 0) + (list.status_counts.overdue || 0));
+
+  const meta = await ok(get('/meta'));
+  assert.equal(typeof meta.badges.overdue, 'number');
+
+  await ok(post(`/documents/${inv.id}/sent`, { to: 'ap@halden.test', reminder: true }));
+  const log = await ok(get(`/documents/${inv.id}/activity`));
+  assert.equal(log[0].action, 'reminded');
+
+  const dash = await ok(get('/reports/dashboard'));
+  assert.ok(Array.isArray(dash.drafts) && Array.isArray(dash.due_soon) && Array.isArray(dash.awaiting));
+  assert.equal(dash.setup.issued, true);
+});
+
 test('archiving a client with history keeps it, deleting an unused one removes it', async () => {
   const r1 = await ok(del(`/clients/${client.id}`));
   assert.equal(r1.archived, true);

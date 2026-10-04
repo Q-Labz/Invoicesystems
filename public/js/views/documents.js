@@ -1,11 +1,10 @@
 import {
   api, esc, money, date, statusChip, pageHead, empty, state, toast, dialog, confirmDialog, showErrors,
-  clearErrors, field, input, select, textarea, qs, go, download, fromMinor, locale,
+  clearErrors, field, input, select, textarea, qs, go, download, fromMinor, locale, rowLinks, setLeaveGuard, modKey,
 } from '../ui.js';
 import { renderDocument, methodLabel, METHOD_LABELS } from '../lib/doc-render.js';
 import { isCurrency } from '../lib/money.js';
 import { addDays, diffDays } from '../lib/dates.js';
-import { rowLinks } from './dashboard.js';
 import { linesMarkup, discountMarkup, mountLineEditor, linesToModel, discountToModel, blankLine } from './line-editor.js';
 
 const PLURAL = { invoice: 'invoices', estimate: 'estimates' };
@@ -20,7 +19,7 @@ export const COMMON_CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'NZD', 'CHF
 
 // ============================================================ list
 
-export async function documentListView({ el, query }, kind) {
+export async function documentListView({ el, query, refresh }, kind) {
   const limit = 50;
   const offset = Number(query.offset) || 0;
   const [data, clients] = await Promise.all([
@@ -30,10 +29,18 @@ export async function documentListView({ el, query }, kind) {
   const base = `#/${PLURAL[kind]}`;
   const link = (patch) => `${base}${qs({ ...query, offset: undefined, ...patch })}`;
   const isInvoice = kind === 'invoice';
+  const counts = data.status_counts || {};
+  const filtered = query.q || query.client_id || query.from || query.to;
   const sortLink = (key, label, cls = '') => {
     const active = (query.sort || 'issue_date') === key;
     const order = active && (query.order || 'desc') === 'desc' ? 'asc' : 'desc';
-    return `<th class="${cls}"><a href="${link({ sort: key, order })}">${esc(label)}${active ? ((query.order || 'desc') === 'desc' ? ' ↓' : ' ↑') : ''}</a></th>`;
+    const arrow = active ? ((query.order || 'desc') === 'desc' ? ' ↓' : ' ↑') : '';
+    return `<th class="${cls}" ${active ? `aria-sort="${(query.order || 'desc') === 'desc' ? 'descending' : 'ascending'}"` : ''}><a href="${link({ sort: key, order })}">${esc(label)}${arrow}</a></th>`;
+  };
+  const quick = (r) => {
+    if (isInvoice && ['sent', 'partial', 'overdue'].includes(r.status)) return `<button class="btn btn-sm row-act" type="button" data-quick="pay" data-id="${r.id}">Payment</button>`;
+    if (r.status === 'draft') return `<button class="btn btn-sm row-act" type="button" data-quick="issue" data-id="${r.id}">Issue</button>`;
+    return '';
   };
 
   el.innerHTML = `
@@ -42,58 +49,100 @@ export async function documentListView({ el, query }, kind) {
       <a class="cta" href="${base}/new">New ${kind}</a>`)}
 
     <nav class="tabs" aria-label="Status">
-      ${STATUS_TABS[kind].map(([v, l]) => `<a href="${link({ status: v || undefined })}" ${(query.status || '') === v ? 'aria-current="true"' : ''}>${esc(l)}</a>`).join('')}
+      ${STATUS_TABS[kind].map(([v, l]) => {
+        const n = counts[v || 'all'] || 0;
+        return `<a href="${link({ status: v || undefined })}" ${(query.status || '') === v ? 'aria-current="true"' : ''}>${esc(l)}${n ? `<span class="count">${n}</span>` : ''}</a>`;
+      }).join('')}
     </nav>
 
-    <form class="filters" data-filters>
-      <label class="field grow"><span>Search</span><input name="q" value="${esc(query.q || '')}" placeholder="Number, client, PO, project"></label>
+    <form class="filters" data-filters role="search">
+      <label class="field grow"><span>Search</span><input name="q" type="search" value="${esc(query.q || '')}" placeholder="Number, client, PO, project" autocomplete="off"></label>
       <label class="field"><span>Client</span>${select('client_id', [['', 'All clients'], ...clients.map((c) => [c.id, c.name])], query.client_id)}</label>
       <label class="field"><span>Issued from</span><input type="date" name="from" value="${esc(query.from || '')}"></label>
       <label class="field"><span>to</span><input type="date" name="to" value="${esc(query.to || '')}"></label>
-      <button class="btn" type="submit">Filter</button>
-      ${query.q || query.client_id || query.from || query.to ? `<a class="btn btn-quiet" href="${base}${qs({ status: query.status })}">Clear</a>` : ''}
+      ${filtered ? `<a class="btn btn-quiet" href="${base}${qs({ status: query.status })}">Clear</a>` : ''}
     </form>
 
     ${data.rows.length ? `
-    <div class="table-wrap"><table>
+    <div class="table-wrap"><table class="list">
       <thead><tr>
         ${sortLink('number', 'Number')}${sortLink('client_name', 'Client')}<th>Project</th>
         ${sortLink('issue_date', 'Issued')}${sortLink('due_date', isInvoice ? 'Due' : 'Valid until')}
-        ${sortLink('total', 'Total', 'num')}${isInvoice ? sortLink('balance', 'Balance', 'num') : ''}<th>Status</th>
+        ${sortLink('total', 'Total', 'num')}${isInvoice ? sortLink('balance', 'Balance', 'num') : ''}<th>Status</th><th class="c-quick"><span class="sr-only">Quick action</span></th>
       </tr></thead>
       <tbody>${data.rows.map((r) => {
         const href = `${base}/${r.id}`;
+        const late = r.status === 'overdue' ? diffDays(state.meta.today, r.due_date) : 0;
         return `<tr class="row-link" data-href="${href}">
-          <td><a href="${href}">${esc(r.number || 'Draft')}</a></td>
+          <td><a href="${href}" class="${r.number ? '' : 'muted'}">${esc(r.number || 'Draft')}</a></td>
           <td>${esc(r.client_name)}</td>
-          <td class="muted">${esc(r.title || '—')}</td>
+          <td class="muted clip">${esc(r.title || '—')}</td>
           <td class="muted">${esc(date(r.issue_date))}</td>
-          <td class="muted">${esc(date(r.due_date))}${r.status === 'overdue' ? ` · ${diffDays(state.meta.today, r.due_date)}d` : ''}</td>
+          <td class="${late ? '' : 'muted'}">${esc(date(r.due_date))}${late ? ` <span class="late">${late}d late</span>` : ''}</td>
           <td class="num">${esc(money(r.total, r.currency))}</td>
           ${isInvoice ? `<td class="num">${r.state === 'issued' ? esc(money(r.balance, r.currency)) : '<span class="muted">—</span>'}</td>` : ''}
           <td>${statusChip(r.status)}</td>
+          <td class="c-quick">${quick(r)}</td>
         </tr>`;
       }).join('')}</tbody>
       <tfoot>${data.totals.map((t) => `<tr>
-        <td colspan="5" class="muted">${data.count} ${PLURAL[kind]} · ${esc(t.currency)}</td>
+        <td colspan="5" class="muted">${data.count} ${data.count === 1 ? kind : PLURAL[kind]} · ${esc(t.currency)}</td>
         <td class="num">${esc(money(t.total, t.currency))}</td>
-        ${isInvoice ? `<td class="num">${esc(money(t.balance, t.currency))}</td>` : ''}<td></td></tr>`).join('')}</tfoot>
+        ${isInvoice ? `<td class="num">${esc(money(t.balance, t.currency))}</td>` : ''}<td></td><td></td></tr>`).join('')}</tfoot>
     </table></div>
-    ` : empty(query.status || query.q || query.client_id ? 'No matches for these filters.' : `No ${PLURAL[kind]} yet.`)}
+    ` : (counts.all || filtered
+      ? empty('No matches for these filters.', `<a class="btn" href="${base}">Show all ${PLURAL[kind]}</a>`)
+      : firstRun(kind))}
     <div class="actions pager">
       ${offset > 0 ? `<a class="btn" href="${base}${qs({ ...query, offset: Math.max(0, offset - limit) })}">← Newer</a>` : ''}
       ${offset + limit < data.count ? `<a class="btn" href="${base}${qs({ ...query, offset: offset + limit })}">Older →</a>` : ''}
       ${data.count > limit ? `<span class="hint">${offset + 1}–${Math.min(offset + limit, data.count)} of ${data.count}</span>` : ''}
     </div>`;
 
-  el.querySelector('[data-filters]').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
+  const form = el.querySelector('[data-filters]');
+  const apply = () => {
+    const f = new FormData(form);
     go(`${base.slice(1)}${qs({ status: query.status, sort: query.sort, order: query.order, q: f.get('q'), client_id: f.get('client_id'), from: f.get('from'), to: f.get('to') })}`);
+  };
+  form.addEventListener('submit', (e) => { e.preventDefault(); apply(); });
+  form.addEventListener('change', (e) => { if (e.target.name !== 'q') apply(); });
+  // Search as you type, with the caret kept in place across the re-render.
+  let t = null;
+  form.q.addEventListener('input', () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      sessionStorage.setItem('focus-q', '1');
+      apply();
+    }, 350);
   });
-  el.querySelector('[data-filters] select').addEventListener('change', (e) => e.target.form.requestSubmit());
+  try {
+    if (sessionStorage.getItem('focus-q')) {
+      sessionStorage.removeItem('focus-q');
+      requestAnimationFrame(() => {
+        const q = document.querySelector('[data-filters] [name=q]');
+        q?.focus();
+        q?.setSelectionRange(q.value.length, q.value.length);
+      });
+    }
+  } catch {}
   el.querySelector('[data-export]').addEventListener('click', () => download(`/export/${PLURAL[kind]}.csv${qs({ from: query.from, to: query.to })}`));
-  el.addEventListener('click', rowLinks);
+  el.addEventListener('click', async (e) => {
+    const q = e.target.closest('[data-quick]');
+    if (!q) return rowLinks(e);
+    const doc = await api(`/documents/${q.dataset.id}`);
+    if (q.dataset.quick === 'pay') paymentDialog(doc, refresh, false);
+    else issueDialog(doc, refresh);
+  });
+}
+
+function firstRun(kind) {
+  const steps = kind === 'invoice'
+    ? ['Add a client.', 'Write the lines. Totals and tax work themselves out.', 'Issue it. The number is assigned then, never before.']
+    : ['Write the scope as lines.', 'Issue it and send the link.', 'Convert to an invoice once accepted.'];
+  return `<div class="first-run">
+    <ol>${steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>
+    <a class="btn btn-solid" href="#/${PLURAL[kind]}/new">Write the first ${kind}</a>
+  </div>`;
 }
 
 // ============================================================ detail
@@ -105,16 +154,18 @@ export async function documentDetailView(ctx, kind, id) {
   const isInvoice = kind === 'invoice';
   const shareUrl = `${location.origin}/p/${doc.share_token}`;
   const today = state.meta.today;
+  const st = doc.state;
+  const sentBefore = activity.some((a) => a.action === 'sent' || a.action === 'reminded');
 
   const a = []; // secondary actions
   let cta = '';
-  const st = doc.state;
   if (st === 'draft') {
     cta = `<button class="cta" type="button" data-act="issue">Issue ${kind}</button>`;
     a.push(['edit', 'Edit'], ['duplicate', 'Duplicate'], ['delete', 'Delete']);
   } else if (isInvoice && st === 'issued') {
     if (doc.balance > 0) cta = '<button class="cta" type="button" data-act="pay">Record payment</button>';
-    a.push(['send', 'Email'], ['print', 'Print / PDF'], ['copy', 'Copy link']);
+    a.push(doc.status === 'overdue' ? ['remind', 'Send reminder'] : ['send', sentBefore ? 'Email again' : 'Email']);
+    a.push(['print', 'Print / PDF'], ['copy', 'Copy link']);
     if (!doc.payments.length) a.push(['edit', 'Edit']);
     a.push(['duplicate', 'Duplicate']);
     if (doc.paid > 0) a.push(['refund', 'Refund']);
@@ -131,29 +182,32 @@ export async function documentDetailView(ctx, kind, id) {
     a.push(['duplicate', 'Duplicate']);
   }
 
-  let dueLine = '';
-  if (isInvoice && st === 'issued' && doc.balance > 0 && doc.due_date) {
-    const n = diffDays(doc.due_date, today);
-    dueLine = n < 0 ? `${-n} day${n === -1 ? '' : 's'} overdue` : n === 0 ? 'Due today' : `Due in ${n} day${n === 1 ? '' : 's'}`;
-  }
+  const next = nextStep(doc, sentBefore, today);
+  const pct = isInvoice && doc.total > 0 ? Math.max(0, Math.min(100, Math.round((doc.paid / doc.total) * 100))) : 0;
 
   el.innerHTML = `
-    ${pageHead(`${LABEL[kind]} · ${doc.status}`, doc.number || `Draft ${kind}`, `
-      ${a.map(([act, label]) => `<button class="btn${['delete', 'void'].includes(act) ? ' btn-quiet' : ''}" type="button" data-act="${act}">${esc(label)}</button>`).join('')}
+    ${pageHead(`${LABEL[kind]} · ${doc.client.name}`, doc.number || `Draft ${kind}`, `
+      ${actionButtons(a)}
       ${cta}`)}
     <div class="split">
       <div>${renderDocument(doc, { locale: locale() })}</div>
-      <aside class="no-print">
-        <div class="panel">
-          <h3>${esc(doc.client.name)}</h3>
-          <dl class="dl">
+      <aside class="no-print stack-panels">
+        <div class="panel summary">
+          <div class="summary-top">${statusChip(doc.status)}<span class="hint">${esc(next.when || '')}</span></div>
+          <div class="summary-figure">${esc(money(isInvoice && st !== 'draft' ? doc.balance : doc.total, doc.currency))}</div>
+          <div class="hint">${isInvoice && st !== 'draft' ? (doc.balance > 0 ? 'Balance due' : 'Settled') : 'Total'}</div>
+          ${isInvoice && st === 'issued' ? `
+          <svg class="meter" viewBox="0 0 100 4" preserveAspectRatio="none" role="img" aria-label="${pct}% paid">
+            <rect class="meter-track" x="0" y="0" width="100" height="4"></rect>
+            <rect class="meter-fill" x="0" y="0" width="${pct}" height="4"></rect>
+          </svg>
+          <dl class="dl mt-1">
             <dt>Total</dt><dd>${esc(money(doc.total, doc.currency))}</dd>
-            ${isInvoice ? `<dt>Paid</dt><dd>${esc(money(doc.paid, doc.currency))}</dd><dt>Balance</dt><dd>${esc(money(doc.balance, doc.currency))}</dd>` : ''}
-            <dt>Status</dt><dd>${statusChip(doc.status)}</dd>
-          </dl>
-          ${dueLine ? `<p class="hint mt-2">${esc(dueLine)}</p>` : ''}
+            <dt>Paid · ${pct}%</dt><dd>${esc(money(doc.paid, doc.currency))}</dd>
+          </dl>` : ''}
+          ${next.text ? `<p class="next-step">${esc(next.text)}</p>` : ''}
           ${doc.void_reason ? `<p class="hint">Void: ${esc(doc.void_reason)}</p>` : ''}
-          <p class="hint"><a href="#/clients/${doc.client_id}">Client record →</a></p>
+          <p class="hint mt-1"><a href="#/clients/${doc.client_id}">${esc(doc.client.name)} · client record</a></p>
         </div>
 
         ${isInvoice && doc.payments.length ? `
@@ -161,7 +215,7 @@ export async function documentDetailView(ctx, kind, id) {
           <h3>Payments</h3>
           <table><tbody>${doc.payments.map((p) => `<tr>
             <td class="muted">${esc(date(p.date))}<br>${esc(methodLabel(p.method))}${p.reference ? ` · ${esc(p.reference)}` : ''}</td>
-            <td class="num">${p.amount < 0 ? 'Refund ' : ''}${esc(money(Math.abs(p.amount), doc.currency))}${st === 'issued' ? `<br><button class="icon-btn" type="button" data-del-payment="${p.id}" aria-label="Remove payment">remove</button>` : ''}</td>
+            <td class="num">${p.amount < 0 ? 'Refund ' : ''}${esc(money(Math.abs(p.amount), doc.currency))}${st === 'issued' ? `<br><button class="icon-btn" type="button" data-del-payment="${p.id}" aria-label="Remove payment of ${esc(money(Math.abs(p.amount), doc.currency))}">remove</button>` : ''}</td>
           </tr>`).join('')}</tbody></table>
         </div>` : ''}
 
@@ -169,11 +223,13 @@ export async function documentDetailView(ctx, kind, id) {
         <div class="panel">
           <h3>Client link</h3>
           <p class="hint">Read-only. Anyone with the link can view it.</p>
-          <input readonly value="${esc(shareUrl)}" data-share-url aria-label="Share link">
-          <div class="actions mt-1">
+          <div class="copy-field">
+            <input readonly value="${esc(shareUrl)}" data-share-url aria-label="Share link">
             <button class="btn btn-sm" type="button" data-act="copy">Copy</button>
-            <a class="btn btn-sm" href="${esc(shareUrl)}" target="_blank" rel="noopener">Open</a>
-            <button class="btn btn-sm btn-quiet" type="button" data-act="rotate">New link</button>
+          </div>
+          <div class="actions mt-1">
+            <a class="btn btn-sm btn-quiet" href="${esc(shareUrl)}" target="_blank" rel="noopener">Preview as client ↗</a>
+            <button class="btn btn-sm btn-quiet" type="button" data-act="rotate">Replace link</button>
           </div>
         </div>` : ''}
 
@@ -189,7 +245,7 @@ export async function documentDetailView(ctx, kind, id) {
 
         <div class="panel">
           <h3>Activity</h3>
-          <ol class="timeline">${activity.map((ev) => `<li><time>${esc(new Date(ev.at).toLocaleString(locale()))}</time>${esc(describe(ev, doc.currency))}</li>`).join('')}</ol>
+          <ol class="timeline">${activity.map((ev) => `<li><time datetime="${esc(ev.at)}">${esc(relTime(ev.at))}</time>${esc(describe(ev, doc.currency))}</li>`).join('')}</ol>
         </div>
       </aside>
     </div>`;
@@ -205,18 +261,20 @@ export async function documentDetailView(ctx, kind, id) {
     }
   };
 
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      toast('Link copied');
+    } catch {
+      el.querySelector('[data-share-url]')?.select();
+      toast('Select and copy the link', true);
+    }
+  };
+
   const handlers = {
     edit: () => go(`/${PLURAL[kind]}/${id}/edit`),
     print: () => window.print(),
-    copy: async () => {
-      try {
-        await navigator.clipboard.writeText(shareUrl);
-        toast('Link copied');
-      } catch {
-        el.querySelector('[data-share-url]')?.select();
-        toast('Select and copy the link', true);
-      }
-    },
+    copy: copyLink,
     rotate: async () => {
       if (!(await confirmDialog('Replace the link?', 'The current link stops working. Anyone who has it loses access.', 'Replace link'))) return;
       if (await run(() => api(`/documents/${id}/share`, { method: 'POST' }), 'New link ready')) refresh();
@@ -224,13 +282,14 @@ export async function documentDetailView(ctx, kind, id) {
     issue: () => issueDialog(doc, refresh),
     pay: () => paymentDialog(doc, refresh, false),
     refund: () => paymentDialog(doc, refresh, true),
-    send: () => sendDialog(doc, shareUrl, refresh),
+    send: () => sendDialog(doc, refresh),
+    remind: () => sendDialog(doc, refresh, { reminder: true }),
     duplicate: async () => {
       const copy = await run(() => api(`/documents/${id}/duplicate`, { method: 'POST' }), 'Duplicated as a draft');
       if (copy) go(`/${PLURAL[kind]}/${copy.id}/edit`);
     },
     delete: async () => {
-      if (!(await confirmDialog(`Delete this draft?`, 'Drafts have no number, so nothing is lost from the sequence.', 'Delete'))) return;
+      if (!(await confirmDialog('Delete this draft?', 'Drafts have no number, so nothing is lost from the sequence.', 'Delete'))) return;
       if (await run(() => api(`/documents/${id}`, { method: 'DELETE' }), 'Draft deleted')) go(`/${PLURAL[kind]}`);
     },
     void: async () => {
@@ -246,20 +305,78 @@ export async function documentDetailView(ctx, kind, id) {
     accept: async () => { if (await run(() => api(`/documents/${id}/accept`, { method: 'POST' }), 'Marked accepted')) refresh(); },
     decline: async () => { if (await run(() => api(`/documents/${id}/decline`, { method: 'POST' }), 'Marked declined')) refresh(); },
     convert: async () => {
-      const inv = await run(() => api(`/documents/${id}/convert`, { method: 'POST' }), 'Draft invoice created');
+      const inv = await run(() => api(`/documents/${id}/convert`, { method: 'POST' }), 'Draft invoice created from the estimate');
       if (inv) go(`/invoices/${inv.id}`);
     },
   };
 
+  // Close the More menu on outside click, Escape, or after choosing.
+  const more = el.querySelector('details.more');
+  if (more) {
+    const outside = (e) => {
+      if (!more.isConnected) return document.removeEventListener('click', outside);
+      if (!more.contains(e.target)) more.open = false;
+    };
+    document.addEventListener('click', outside);
+    more.addEventListener('keydown', (e) => { if (e.key === 'Escape') { more.open = false; more.querySelector('summary').focus(); } });
+  }
+
   el.addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-act]');
-    if (btn) return handlers[btn.dataset.act]?.();
+    if (btn) {
+      if (more) more.open = false;
+      return handlers[btn.dataset.act]?.();
+    }
     const del = e.target.closest('[data-del-payment]');
     if (del) {
       if (!(await confirmDialog('Remove this payment?', 'The balance goes back up by this amount. The removal is logged.', 'Remove'))) return;
       if (await run(() => api(`/payments/${del.dataset.delPayment}`, { method: 'DELETE' }), 'Payment removed')) refresh();
     }
   });
+}
+
+// The first two actions stay in view; the rest fold into a "More" menu.
+function actionButtons(list) {
+  const shown = list.slice(0, 2);
+  const rest = list.slice(2);
+  const btn = ([act, label], cls = 'btn') => `<button class="${cls}${['delete', 'void'].includes(act) ? ' danger' : ''}" type="button" data-act="${act}">${esc(label)}</button>`;
+  return `${shown.map((x) => btn(x)).join('')}${rest.length ? `
+    <details class="more">
+      <summary class="btn" aria-label="More actions">More</summary>
+      <div class="more-menu" role="menu">${rest.map((x) => btn(x, 'more-item')).join('')}</div>
+    </details>` : ''}`;
+}
+
+// One plain sentence on what to do next, so the page always answers "now what?".
+function nextStep(doc, sentBefore, today) {
+  const isInvoice = doc.kind === 'invoice';
+  if (doc.state === 'draft') return { text: `Next: issue it. The number is assigned then${isInvoice ? '' : ', and the client can open the link'}.` };
+  if (doc.state === 'void') return { text: 'Voided. The number stays in the ledger.' };
+  if (!isInvoice) {
+    if (doc.status === 'accepted') return { text: 'Accepted. Convert it to an invoice when the work starts.' };
+    if (doc.status === 'expired') return { text: 'Past its valid date. Duplicate it to re-quote.', when: `Expired ${date(doc.due_date)}` };
+    if (doc.status === 'sent') return { text: sentBefore ? 'Waiting on the client.' : 'Next: email it to the client.', when: doc.due_date ? `Valid until ${date(doc.due_date)}` : '' };
+    return { text: '' };
+  }
+  if (doc.status === 'paid') {
+    const last = doc.payments.filter((p) => p.amount > 0).at(-1);
+    return { text: last ? `Settled ${date(last.date)}, ${diffDays(last.date, doc.issue_date)} days after issue.` : 'Settled.' };
+  }
+  const n = doc.due_date ? diffDays(doc.due_date, today) : null;
+  const when = n === null ? '' : n < 0 ? `${-n} day${n === -1 ? '' : 's'} late` : n === 0 ? 'Due today' : `Due in ${n} day${n === 1 ? '' : 's'}`;
+  if (doc.status === 'overdue') return { text: 'Past due. Send a reminder, or record the payment if it arrived.', when };
+  if (!sentBefore) return { text: 'Next: email it to the client.', when };
+  return { text: doc.status === 'partial' ? 'Part paid. Waiting on the rest.' : 'Sent. Waiting on payment.', when };
+}
+
+function relTime(iso) {
+  const t = new Date(iso);
+  const mins = Math.round((Date.now() - t) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} h ago`;
+  return t.toLocaleDateString(locale(), { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function describe(ev, currency) {
@@ -275,72 +392,98 @@ function describe(ev, currency) {
     case 'deleted': return d.amount !== undefined ? `Payment of ${amt(d.amount)} removed` : 'Deleted';
     case 'voided': return `Voided${d.reason ? ` · ${d.reason}` : ''}`;
     case 'sent': return `Emailed${d.to ? ` to ${d.to}` : ''}`;
+    case 'reminded': return `Reminder sent${d.to ? ` to ${d.to}` : ''}`;
     case 'converted': return 'Converted to an invoice';
+    case 'accepted': return 'Marked accepted';
+    case 'declined': return 'Marked declined';
     case 'share_link_rotated': return 'Share link replaced';
     default: return ev.action.replace(/_/g, ' ');
   }
 }
 
-async function issueDialog(doc, refresh) {
+export async function issueDialog(doc, refresh) {
   const next = state.meta.next_numbers?.[doc.kind]?.next;
   const ok = await dialog({
     title: `Issue this ${doc.kind}?`,
-    body: `<p>It receives the next number${next ? ` — likely <span class="mono">${esc(next)}</span>` : ''} — and the client and business details are frozen as they are now.</p>
+    body: `<p>It takes the next number${next ? `, <span class="mono">${esc(next)}</span>` : ''}. The client and business details are frozen as they are now.</p>
+      <dl class="dl dialog-sum"><dt>${esc(doc.client.name)}</dt><dd>${esc(money(doc.total, doc.currency))}</dd></dl>
       <div class="form-grid">${field('Issue date', input('date', doc.issue_date, 'type="date" required'), { span: 6, hint: doc.due_date ? 'The due date moves with it.' : '' })}</div>`,
     submit: `Issue ${doc.kind}`,
     onSubmit: (v) => api(`/documents/${doc.id}/issue`, { method: 'POST', body: { date: v.date } }),
   });
   if (ok) {
-    toast(`Issued as ${ok.number}`);
     state.meta = await api('/meta');
+    toast(`Issued as ${ok.number}`, false, { label: 'Email it', run: () => sendDialog(ok, refresh) });
     refresh();
   }
 }
 
-async function paymentDialog(doc, refresh, refund) {
+export async function paymentDialog(doc, refresh, refund) {
   const max = refund ? doc.paid : doc.balance;
   const ok = await dialog({
     title: refund ? `Refund on ${doc.number}` : `Payment on ${doc.number}`,
-    body: `<div class="form-grid">
-      ${field(`Amount ${doc.currency}`, input('amount', fromMinor(max, doc.currency), `inputmode="decimal" required autocomplete="off"`), { span: 6, hint: `${refund ? 'Paid so far' : 'Balance'} ${money(max, doc.currency)}` })}
-      ${field('Date', input('date', state.meta.today, 'type="date" required'), { span: 6 })}
-      ${field('Method', select('method', Object.entries(METHOD_LABELS), 'bank_transfer'), { span: 6 })}
+    body: `<dl class="dl dialog-sum"><dt>${esc(doc.client.name)} · ${refund ? 'paid so far' : 'balance'}</dt><dd>${esc(money(max, doc.currency))}</dd></dl>
+    <div class="form-grid">
+      ${field(`Amount ${doc.currency}`, input('amount', fromMinor(max, doc.currency), `inputmode="decimal" required autocomplete="off"`), { span: 6 })}
+      ${field('Date received', input('date', state.meta.today, 'type="date" required'), { span: 6 })}
+      ${field('Method', select('method', Object.entries(METHOD_LABELS), lastMethod()), { span: 6 })}
       ${field('Reference', input('reference', '', 'maxlength="120" placeholder="Transaction ID"'), { span: 6 })}
       ${field('Note', input('note', '', 'maxlength="1000"'), { span: 12 })}
     </div>`,
     submit: refund ? 'Record refund' : 'Record payment',
-    onSubmit: (v) => api(`/documents/${doc.id}/payments`, { method: 'POST', body: { ...v, refund } }),
+    onSubmit: (v) => {
+      try { localStorage.setItem('last-method', v.method); } catch {}
+      return api(`/documents/${doc.id}/payments`, { method: 'POST', body: { ...v, refund } });
+    },
   });
   if (ok) {
-    toast(refund ? 'Refund recorded' : ok.status === 'paid' ? 'Paid in full' : 'Payment recorded');
+    toast(refund ? 'Refund recorded' : ok.status === 'paid' ? `${ok.number} paid in full` : `Payment recorded. ${money(ok.balance, ok.currency)} left.`);
     refresh();
   }
 }
 
-async function sendDialog(doc, shareUrl, refresh) {
-  const to = [doc.client.email, ...(doc.client.cc_emails || '').split(/[,;\s]+/)].filter(Boolean).join(', ');
-  const biz = doc.from?.name || '7LABZ';
+function lastMethod() {
+  try {
+    return localStorage.getItem('last-method') || 'bank_transfer';
+  } catch {
+    return 'bank_transfer';
+  }
+}
+
+export async function sendDialog(doc, refresh, { reminder = false } = {}) {
+  const shareUrl = `${location.origin}/p/${doc.share_token}`;
+  const to = [doc.client?.email, ...(doc.client?.cc_emails || '').split(/[,;\s]+/)].filter(Boolean).join(', ');
+  const biz = doc.from?.name || state.settings.business.name || '7LABZ';
   const isInvoice = doc.kind === 'invoice';
-  const subject = `${isInvoice ? 'Invoice' : 'Estimate'} ${doc.number} from ${biz}`;
+  const name = doc.bill_to?.name || doc.client?.name || '';
   const amount = money(isInvoice ? doc.balance : doc.total, doc.currency);
-  const body = isInvoice
-    ? `Hi ${doc.bill_to?.name || ''},\n\nInvoice ${doc.number} for ${amount} is ready${doc.due_date ? `, due ${date(doc.due_date)}` : ''}.\n\nView or download it here:\n${shareUrl}\n\n${biz}`
-    : `Hi ${doc.bill_to?.name || ''},\n\nEstimate ${doc.number} for ${amount} is ready${doc.due_date ? `, valid until ${date(doc.due_date)}` : ''}.\n\nView it here:\n${shareUrl}\n\n${biz}`;
+  const late = doc.due_date ? diffDays(state.meta.today, doc.due_date) : 0;
+  let subject, body;
+  if (reminder) {
+    subject = `Reminder: invoice ${doc.number}, ${amount} outstanding`;
+    body = `Hi ${name},\n\nA reminder that invoice ${doc.number} for ${amount} was due ${date(doc.due_date)}${late > 0 ? `, ${late} days ago` : ''}.\n\nThe invoice and payment details are here:\n${shareUrl}\n\nIf it is already on its way, thank you, and ignore this note.\n\n${biz}`;
+  } else if (isInvoice) {
+    subject = `Invoice ${doc.number} from ${biz}`;
+    body = `Hi ${name},\n\nInvoice ${doc.number} for ${amount} is ready${doc.due_date ? `, due ${date(doc.due_date)}` : ''}.\n\nView or download it here:\n${shareUrl}\n\n${biz}`;
+  } else {
+    subject = `Estimate ${doc.number} from ${biz}`;
+    body = `Hi ${name},\n\nEstimate ${doc.number} for ${amount} is ready${doc.due_date ? `, valid until ${date(doc.due_date)}` : ''}.\n\nView it here:\n${shareUrl}\n\n${biz}`;
+  }
   const ok = await dialog({
-    title: 'Email the client',
+    title: reminder ? 'Send a reminder' : 'Email the client',
     body: `<div class="form-grid">
-      ${field('To', input('to', to, 'required'), { span: 12 })}
+      ${field('To', input('to', to, 'required'), { span: 12, hint: to ? '' : 'This client has no email on file.' })}
       ${field('Subject', input('subject', subject), { span: 12 })}
-      ${field('Message', textarea('body', body, 'rows="9"'), { span: 12, hint: 'Opens in your mail app. The send is logged on the invoice.' })}
+      ${field('Message', textarea('body', body, 'rows="10"'), { span: 12, hint: 'Opens in your mail app. The send is logged on the document.' })}
     </div>`,
     submit: 'Open in mail app',
     onSubmit: async (v) => {
       location.href = `mailto:${encodeURIComponent(v.to).replace(/%2C/g, ',').replace(/%40/g, '@')}?subject=${encodeURIComponent(v.subject)}&body=${encodeURIComponent(v.body)}`;
-      await api(`/documents/${doc.id}/sent`, { method: 'POST', body: { to: v.to } });
+      await api(`/documents/${doc.id}/sent`, { method: 'POST', body: { to: v.to, reminder } });
       return true;
     },
   });
-  if (ok) refresh();
+  if (ok) refresh?.();
 }
 
 // ============================================================ editor
@@ -348,7 +491,7 @@ async function sendDialog(doc, shareUrl, refresh) {
 const TERMS = [['', 'Custom'], ['0', 'Due on receipt'], ['7', 'Net 7'], ['15', 'Net 15'], ['30', 'Net 30'], ['45', 'Net 45'], ['60', 'Net 60'], ['90', 'Net 90']];
 const VALIDITY = [['', 'Custom'], ['14', '14 days'], ['30', '30 days'], ['60', '60 days'], ['90', '90 days']];
 
-export async function documentEditView({ el, query }, kind, id) {
+export async function documentEditView({ el, query, refresh }, kind, id) {
   const [doc, clients, items] = await Promise.all([
     id ? api(`/documents/${id}`) : null,
     api('/clients'),
@@ -356,7 +499,10 @@ export async function documentEditView({ el, query }, kind, id) {
   ]);
   if (doc && doc.kind !== kind) return go(`/${PLURAL[doc.kind]}/${id}/edit`);
   if (!clients.length && !doc) {
-    el.innerHTML = `${pageHead(LABEL[kind], `New ${kind}`)}${empty('Add a client first. Every document is addressed to one.', '<a class="cta" href="#/clients/new">Add a client</a>')}`;
+    el.innerHTML = `${pageHead(LABEL[kind], `New ${kind}`)}${empty('Every document is addressed to a client. Add the first one here; it takes ten seconds.', '<button class="btn btn-solid" type="button" data-new-client>Add a client</button>')}`;
+    el.querySelector('[data-new-client]').addEventListener('click', async () => {
+      if (await quickClientDialog()) refresh();
+    });
     return;
   }
   // An archived client can stay on an existing document but is not offered for new ones.
@@ -388,16 +534,14 @@ export async function documentEditView({ el, query }, kind, id) {
 
   el.innerHTML = `
     ${pageHead(doc ? `${LABEL[kind]} · ${doc.number || 'draft'}` : LABEL[kind], doc ? `Edit ${doc.number || `draft ${kind}`}` : `New ${kind}`, `
-      <a class="btn btn-quiet" href="#/${PLURAL[kind]}${doc ? `/${doc.id}` : ''}">Cancel</a>
-      ${!locked ? '<button class="btn" type="submit" form="doc-form" data-mode="draft">Save draft</button>' : ''}
-      <button class="cta" type="submit" form="doc-form" data-mode="${locked ? 'save' : 'issue'}">${locked ? 'Save changes' : 'Save and issue'}</button>`)}
+      <a class="btn btn-quiet" href="#/${PLURAL[kind]}${doc ? `/${doc.id}` : ''}">Cancel</a>`)}
 
-    ${locked ? `<p class="hint">This ${kind} is issued. Changes are logged, and the client link shows the new version.</p>` : ''}
+    ${locked ? `<p class="notice">This ${kind} is issued. Changes are logged, and the client link shows the new version.</p>` : ''}
 
     <form id="doc-form" class="editor" novalidate autocomplete="off">
       <div>
         <section class="section form-grid">
-          ${field('Client', select('client_id', [['', 'Choose a client'], ...clients.map((c) => [c.id, c.company ? `${c.name} — ${c.company}` : c.name])], model.client_id, 'required'), { span: 6 })}
+          ${field('Client', select('client_id', clientOptions(clients), model.client_id, 'required'), { span: 6 })}
           ${field('Currency', select('currency', currencies.map((c) => [c, c]), model.currency), { span: 2 })}
           ${field('PO number', input('po_number', model.po_number, 'maxlength="60"'), { span: 4 })}
           ${field('Issue date', input('issue_date', model.issue_date, 'type="date" required'), { span: 4 })}
@@ -425,6 +569,15 @@ export async function documentEditView({ el, query }, kind, id) {
           ${field('Terms', textarea('terms', model.terms, 'maxlength="8000" rows="4"'), { span: 6 })}
         </section>
       </div>
+
+      <div class="savebar" role="region" aria-label="Save">
+        <div class="savebar-sum"><span class="label">Total</span> <span class="savebar-total" data-live-total>—</span> <span class="hint" data-live-meta></span></div>
+        <div class="actions">
+          <span class="hint savebar-keys"><kbd>${esc(modKey)}</kbd><kbd>S</kbd> save${locked ? '' : ` · <kbd>${esc(modKey)}</kbd><kbd>↵</kbd> issue`}</span>
+          ${!locked ? '<button class="btn" type="submit" data-mode="draft">Save draft</button>' : ''}
+          <button class="cta" type="submit" data-mode="${locked ? 'save' : 'issue'}">${locked ? 'Save changes' : 'Save and issue'}</button>
+        </div>
+      </div>
     </form>`;
 
   const form = el.querySelector('#doc-form');
@@ -434,6 +587,10 @@ export async function documentEditView({ el, query }, kind, id) {
     lines: model.lines,
     items,
     onDirty: () => (dirty = true),
+    onTotals: (t, cur, n) => {
+      el.querySelector('[data-live-total]').textContent = money(t.total, cur);
+      el.querySelector('[data-live-meta]').textContent = `${n} line${n === 1 ? '' : 's'}${t.tax_total ? ` · tax ${money(t.tax_total, cur)}` : ''}`;
+    },
     extraTotals: (cur) => (doc?.paid ? `<div class="row muted"><span>Paid so far</span><span>${esc(money(doc.paid, cur))}</span></div>` : ''),
   });
 
@@ -445,7 +602,19 @@ export async function documentEditView({ el, query }, kind, id) {
   f('issue_date').addEventListener('change', syncDue);
   f('due_date').addEventListener('change', () => (f('terms_days').value = ''));
 
-  f('client_id').addEventListener('change', () => {
+  let prevClient = f('client_id').value;
+  f('client_id').addEventListener('change', async () => {
+    if (f('client_id').value === '__new') {
+      const created = await quickClientDialog();
+      if (!created) {
+        f('client_id').value = prevClient;
+        return;
+      }
+      clients.push(created);
+      f('client_id').innerHTML = clientOptions(clients).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
+      f('client_id').value = String(created.id);
+    }
+    prevClient = f('client_id').value;
     const c = clients.find((x) => x.id === Number(f('client_id').value));
     if (!c) return;
     if (!locked || !doc.payments?.length) f('currency').value = c.currency;
@@ -462,6 +631,8 @@ export async function documentEditView({ el, query }, kind, id) {
   };
   window.addEventListener('beforeunload', beforeUnload);
   window.addEventListener('hashchange', () => window.removeEventListener('beforeunload', beforeUnload), { once: true });
+  setLeaveGuard(() => dirty);
+  bindSaveKeys(form, locked ? 'save' : 'draft', locked ? null : 'issue');
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -481,7 +652,7 @@ export async function documentEditView({ el, query }, kind, id) {
       lines: editor.payload(),
     };
     if (!doc) body.kind = kind;
-    const buttons = el.querySelectorAll('[form="doc-form"]');
+    const buttons = form.querySelectorAll('[type=submit]');
     buttons.forEach((b) => (b.disabled = true));
     let saved = null;
     try {
@@ -489,7 +660,8 @@ export async function documentEditView({ el, query }, kind, id) {
       if (mode === 'issue') {
         saved = await api(`/documents/${saved.id}/issue`, { method: 'POST', body: {} });
         state.meta = await api('/meta');
-        toast(`Issued as ${saved.number}`);
+        const issued = saved;
+        toast(`Issued as ${saved.number}`, false, { label: 'Email it', run: () => sendDialog(issued) });
       } else toast(mode === 'save' ? 'Changes saved' : 'Draft saved');
       dirty = false;
       go(`/${PLURAL[kind]}/${saved.id}`);
@@ -504,4 +676,43 @@ export async function documentEditView({ el, query }, kind, id) {
       buttons.forEach((b) => (b.disabled = false));
     }
   });
+}
+
+function clientOptions(clients) {
+  return [['', 'Choose a client'], ...clients.map((c) => [c.id, c.company ? `${c.name} — ${c.company}` : c.name]), ['__new', '+ New client…']];
+}
+
+// Add a client without leaving the editor. Resolves with the client, or null.
+export function quickClientDialog() {
+  const d = state.settings.defaults;
+  const currencies = [...new Set([d.currency, ...COMMON_CURRENCIES])].filter(isCurrency);
+  return dialog({
+    title: 'New client',
+    submit: 'Add client',
+    body: `<div class="form-grid">
+      ${field('Contact name', input('name', '', 'required maxlength="120"'), { span: 6 })}
+      ${field('Company', input('company', '', 'maxlength="120"'), { span: 6 })}
+      ${field('Email', input('email', '', 'type="email" maxlength="254"'), { span: 12, hint: 'Where invoices go.' })}
+      ${field('Currency', select('currency', currencies.map((c) => [c, c]), d.currency), { span: 6 })}
+      ${field('Terms (days)', input('payment_terms_days', d.payment_terms_days, 'type="number" min="0" max="365"'), { span: 6 })}
+    </div>
+    <p class="hint mt-1">Address and tax details can be added later on the client record.</p>`,
+    onSubmit: (v) => api('/clients', { method: 'POST', body: { ...v, payment_terms_days: Number(v.payment_terms_days) } }),
+  }).then((c) => {
+    if (c) toast(`${c.name} added`);
+    return c;
+  });
+}
+
+// Cmd/Ctrl+S saves, Cmd/Ctrl+Enter issues. Bound to the form's own submit buttons.
+export function bindSaveKeys(form, saveMode, issueMode) {
+  const handler = (e) => {
+    if (!(e.metaKey || e.ctrlKey) || document.querySelector('dialog[open]')) return;
+    if (!document.body.contains(form)) return window.removeEventListener('keydown', handler);
+    const mode = e.key.toLowerCase() === 's' ? saveMode : e.key === 'Enter' ? issueMode : null;
+    if (!mode) return;
+    e.preventDefault();
+    [...document.querySelectorAll(`[type=submit][data-mode="${mode}"]`)].find((b) => b.form === form)?.click();
+  };
+  window.addEventListener('keydown', handler);
 }

@@ -56,8 +56,6 @@ export function documentsService(ctx) {
 
     const where = ['v.kind = :kind'];
     const args = { kind: v.kind, today: ctx.today() };
-    if (v.status === 'open') where.push("v.status IN ('sent', 'partial', 'overdue')");
-    else if (v.status) { where.push('v.status = :status'); args.status = v.status; }
     if (v.client_id) { where.push('v.client_id = :client_id'); args.client_id = v.client_id; }
     if (v.recurring_id) { where.push('v.recurring_id = :recurring_id'); args.recurring_id = v.recurring_id; }
     if (v.from) { where.push('v.issue_date >= :from'); args.from = v.from; }
@@ -66,6 +64,16 @@ export function documentsService(ctx) {
       where.push('(v.number LIKE :q OR v.title LIKE :q OR v.po_number LIKE :q OR v.client_name LIKE :q OR v.client_company LIKE :q)');
       args.q = `%${v.q}%`;
     }
+    // Per-status counts for the tabs ignore the status filter itself, so every tab shows its own size.
+    const counts = Object.fromEntries(
+      db.prepare(`SELECT v.status, COUNT(*) AS n FROM (${DOC_VIEW}) v WHERE ${where.join(' AND ')} GROUP BY v.status`).all({ ...args }).map((r) => [r.status, r.n]),
+    );
+    counts.all = Object.values(counts).reduce((a, b) => a + b, 0);
+    counts.open = (counts.sent || 0) + (counts.partial || 0) + (counts.overdue || 0);
+    const statusArgs = {};
+    if (v.status === 'open') where.push("v.status IN ('sent', 'partial', 'overdue')");
+    else if (v.status) { where.push('v.status = :status'); statusArgs.status = v.status; }
+    Object.assign(args, statusArgs);
     const sql = `FROM (${DOC_VIEW}) v WHERE ${where.join(' AND ')}`;
     // Drafts have no number; keep them on top of a newest-first list.
     const order = `${v.sort === 'number' ? 'v.number IS NULL DESC, ' : ''}v.${v.sort} ${v.order}, v.id ${v.order}`;
@@ -74,7 +82,29 @@ export function documentsService(ctx) {
     const totals = db
       .prepare(`SELECT v.currency, SUM(v.total) AS total, SUM(CASE WHEN v.state = 'issued' THEN v.balance ELSE 0 END) AS balance ${sql} GROUP BY v.currency`)
       .all(args);
-    return { rows: rows.map(decode), count, totals, limit: v.limit, offset: v.offset };
+    return { rows: rows.map(decode), count, totals, status_counts: counts, limit: v.limit, offset: v.offset };
+  }
+
+  // Quick search for the command palette: numbers, projects, POs and clients.
+  function search(q) {
+    const term = String(q || '').trim().slice(0, 100);
+    if (!term) return { documents: [], clients: [] };
+    const like = `%${term}%`;
+    const documents = db
+      .prepare(
+        `SELECT v.id, v.kind, v.number, v.title, v.client_name, v.total, v.balance, v.currency, v.status, v.issue_date
+         FROM (${DOC_VIEW}) v
+         WHERE v.number LIKE :q OR v.title LIKE :q OR v.po_number LIKE :q OR v.client_name LIKE :q OR v.client_company LIKE :q
+         ORDER BY (v.number LIKE :prefix) DESC, v.issue_date DESC, v.id DESC LIMIT 8`,
+      )
+      .all({ q: like, prefix: `%${term}`, today: ctx.today() });
+    const clients = db
+      .prepare(
+        `SELECT id, name, company, email, currency, archived FROM clients
+         WHERE name LIKE ? OR company LIKE ? OR email LIKE ? ORDER BY archived, lower(name) LIMIT 5`,
+      )
+      .all(like, like, like);
+    return { documents, clients };
   }
 
   function decode(row) {
@@ -428,10 +458,10 @@ export function documentsService(ctx) {
     return get(id);
   }
 
-  function markSent(id, { to = '' } = {}) {
+  function markSent(id, { to = '', reminder = false } = {}) {
     const doc = row(id);
     if (doc.state === 'draft') throw conflict('Issue the document first');
-    ctx.log('document', id, 'sent', { to: String(to).slice(0, 500) });
+    ctx.log('document', id, reminder ? 'reminded' : 'sent', { to: String(to).slice(0, 500) });
     return { ok: true };
   }
 
@@ -502,7 +532,7 @@ export function documentsService(ctx) {
   }
 
   return {
-    list, get, byToken, activity, create, update, remove, issue, void: voidDoc, duplicate,
+    list, search, get, byToken, activity, create, update, remove, issue, void: voidDoc, duplicate,
     accept: (id) => setEstimateState(id, 'accepted'),
     decline: (id) => setEstimateState(id, 'declined'),
     convert, rotateShare, markSent, addPayment, listPayments, deletePayment, validateLines,

@@ -6,7 +6,7 @@ Node 22, SQLite, zero npm dependencies.
 ```sh
 npm run seed     # optional: demo clients, invoices, payments, a retainer
 npm start        # http://127.0.0.1:7777
-npm test         # 30 tests: money math, lifecycle, HTTP, auth
+npm test         # 31 tests: money math, lifecycle, HTTP, auth
 ```
 
 ## What it does
@@ -47,6 +47,25 @@ basis), top clients. CSV exports for invoices, estimates and payments, plus a fu
 **Sharing.** Each issued document has a read-only link (`/p/<token>`) for the client,
 with print and save-as-PDF. Drafts are never public. The link can be replaced, which
 kills the old one. The email action opens your mail app with the link and logs the send.
+
+## Working in it
+
+- **⌘K / Ctrl+K** or **/** opens the command palette: jump to any invoice, estimate or client by
+  number, name, project or PO, or run an action.
+- Single keys outside text fields: **N** new invoice, **E** new estimate, **C** new client.
+  **G** then a letter jumps: **O** overview, **I** invoices, **E** estimates, **P** payments,
+  **R** recurring, **C** clients, **K** catalog, **A** reports, **S** settings.
+- In any editor, **⌘S / Ctrl+S** saves and **⌘↵ / Ctrl+Enter** saves and issues. A sticky bar
+  keeps the live total in view. Leaving with unsaved changes asks first.
+- The overview opens on the outstanding balance, then a **Needs attention** queue: overdue
+  invoices (with a one-click reminder email), invoices due within a week, drafts not yet issued,
+  and estimates waiting on a reply. Each item has its next action inline. New installs see a
+  setup checklist until the basics are in place.
+- Lists carry per-status counts on their tabs, search as you type, and a quick action on each row
+  (record a payment, or issue a draft).
+- Every document shows its next step in one sentence, a paid-progress bar, and an activity log.
+  Secondary actions sit under **More**.
+- A new client can be added from the client picker without leaving the invoice.
 
 ## Money rules
 
@@ -103,6 +122,7 @@ with `details` keyed by field, using `lines.N.field` for line items.
 | `POST /documents/:id/{issue,void,duplicate,accept,decline,convert,share,sent}` | lifecycle actions |
 | `POST /documents/:id/payments`, `DELETE /payments/:id`, `GET /payments` | `{ amount, date, method, reference, note, refund }` |
 | `GET /documents/:id/activity` | audit trail |
+| `GET /search?q=` | documents and clients for the command palette |
 | `/clients`, `/clients/:id/statement`, `/items`, `/tax-rates` | CRUD; deletes archive when there is history |
 | `/recurring`, `POST /recurring/run`, `POST /recurring/:id/run` | schedules |
 | `/reports/{dashboard,aging,revenue,tax,clients}` | reporting |

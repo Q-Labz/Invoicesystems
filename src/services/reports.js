@@ -65,6 +65,27 @@ export function reportsService(ctx) {
     const overdue = db
       .prepare(`SELECT * FROM ${view()} v WHERE v.kind = 'invoice' AND v.status = 'overdue' ORDER BY v.due_date LIMIT 7`)
       .all({ today });
+    const drafts = db
+      .prepare(`SELECT * FROM ${view()} v WHERE v.kind = 'invoice' AND v.status = 'draft' ORDER BY v.updated_at DESC LIMIT 5`)
+      .all({ today });
+    const dueSoon = db
+      .prepare(
+        `SELECT * FROM ${view()} v WHERE v.kind = 'invoice' AND v.status IN ('sent', 'partial')
+         AND v.due_date <= :soon ORDER BY v.due_date LIMIT 5`,
+      )
+      .all({ today, soon: addDays(today, 7) });
+    const awaiting = db
+      .prepare(`SELECT * FROM ${view()} v WHERE v.kind = 'estimate' AND v.status = 'sent' ORDER BY v.issue_date LIMIT 5`)
+      .all({ today });
+    const business = ctx.settings.get().business;
+    const setup = {
+      business: !!(business.email && business.address),
+      payment_instructions: !!business.payment_instructions,
+      tax_rates: db.prepare('SELECT COUNT(*) AS n FROM tax_rates WHERE archived = 0').get().n > 0,
+      clients: db.prepare('SELECT COUNT(*) AS n FROM clients').get().n > 0,
+      issued: db.prepare("SELECT COUNT(*) AS n FROM documents WHERE state <> 'draft'").get().n > 0,
+    };
+
     const recent = db.prepare(`SELECT * FROM ${view()} v ORDER BY v.updated_at DESC, v.id DESC LIMIT 7`).all({ today });
     const upcoming = db
       .prepare(`SELECT r.id, r.name, r.next_run, r.currency, c.name AS client_name FROM recurring r JOIN clients c ON c.id = r.client_id WHERE r.active = 1 ORDER BY r.next_run LIMIT 5`)
@@ -76,6 +97,10 @@ export function reportsService(ctx) {
       currencies,
       counts,
       overdue,
+      drafts,
+      due_soon: dueSoon,
+      awaiting,
+      setup,
       recent,
       upcoming,
       revenue: revenue({ months: 12 }),

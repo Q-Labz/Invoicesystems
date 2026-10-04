@@ -129,15 +129,56 @@ export function showErrors(root, err) {
 
 // ---------- toast / dialogs ----------
 
-export function toast(message, isError = false) {
+// A toast can carry one follow-up action ("Copy link", "Open").
+export function toast(message, isError = false, action = null) {
   const box = document.getElementById('toasts');
   if (!box) return;
   const el = document.createElement('div');
   el.className = `toast${isError ? ' error' : ''}`;
-  el.textContent = message;
+  const text = document.createElement('span');
+  text.textContent = message;
+  el.append(text);
+  if (action) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'toast-action';
+    b.textContent = action.label;
+    b.addEventListener('click', () => {
+      action.run();
+      el.remove();
+    });
+    el.append(b);
+  }
   box.append(el);
-  setTimeout(() => el.remove(), isError ? 7000 : 3500);
+  setTimeout(() => el.remove(), isError ? 7000 : action ? 6000 : 3500);
 }
+
+// ---------- unsaved changes ----------
+
+let leaveGuard = null;
+
+// An editor registers a function that returns true while it holds unsaved work.
+export function setLeaveGuard(fn) {
+  leaveGuard = fn;
+}
+
+export function canLeave() {
+  if (!leaveGuard || !leaveGuard()) return true;
+  return window.confirm('Leave without saving? The changes on this page will be lost.');
+}
+
+export function clearLeaveGuard() {
+  leaveGuard = null;
+}
+
+// True when a keystroke belongs to a text field, not to a global shortcut.
+export function typing(e) {
+  const t = e.target;
+  return t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName);
+}
+
+export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+export const modKey = isMac ? '⌘' : 'Ctrl';
 
 // Opens a <dialog> with a form. Resolves with the submit handler's result, or null on cancel.
 export function dialog({ title, body, submit = 'Save', onSubmit, danger = false }) {
@@ -202,4 +243,11 @@ export function qs(params) {
 
 export function go(hash) {
   location.hash = hash;
+}
+
+// Whole table rows act as links; the inner <a> stays for keyboard and middle-click.
+export function rowLinks(e) {
+  const row = e.target.closest('tr[data-href]');
+  if (!row || e.target.closest('a, button, input, select, label')) return;
+  location.hash = row.dataset.href;
 }

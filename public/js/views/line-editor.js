@@ -56,7 +56,7 @@ export function blankLine(client) {
  * Wires up the editor inside `form`. Inputs are named lines.N.field so API
  * validation errors (keyed the same way) land on the right cell.
  */
-export function mountLineEditor(form, { lines, items, extraTotals = () => '', onDirty = () => {} }) {
+export function mountLineEditor(form, { lines, items, extraTotals = () => '', onDirty = () => {}, onTotals = () => {} }) {
   const tbody = form.querySelector('[data-lines]');
   const itemById = new Map(items.map((it) => [it.id, it]));
   const currency = () => form.elements.namedItem('currency').value;
@@ -72,7 +72,7 @@ export function mountLineEditor(form, { lines, items, extraTotals = () => '', on
       <td class="c-disc"><input name="discount_percent" value="${esc(l.discount_percent ?? '')}" inputmode="decimal" class="num" placeholder="0" aria-label="Line discount percent"></td>
       <td class="c-tax">${select('tax_rate_id', taxOptions(), l.tax_rate_id ?? '', 'aria-label="Tax"')}</td>
       <td class="c-amt num" data-amount>—</td>
-      <td class="c-ctl"><button class="icon-btn" type="button" data-move="-1" aria-label="Move line up">↑</button><button class="icon-btn" type="button" data-move="1" aria-label="Move line down">↓</button><button class="icon-btn" type="button" data-remove aria-label="Remove line">×</button></td>`;
+      <td class="c-ctl"><button class="icon-btn" type="button" data-move="-1" aria-label="Move line up">↑</button><button class="icon-btn" type="button" data-move="1" aria-label="Move line down">↓</button><button class="icon-btn" type="button" data-dup aria-label="Duplicate line" title="Duplicate">+</button><button class="icon-btn" type="button" data-remove aria-label="Remove line" title="Remove">×</button></td>`;
     return tr;
   }
 
@@ -135,6 +135,7 @@ export function mountLineEditor(form, { lines, items, extraTotals = () => '', on
       <div class="row grand"><span>Total ${esc(cur)}</span><span>${esc(money(t.total, cur))}</span></div>
       ${extraTotals(cur)}
       ${minorDigits(cur) === 0 ? `<p class="hint mt-1">${esc(cur)} has no minor unit. Whole amounts only.</p>` : ''}`;
+    onTotals(t, cur, read().filter((l) => l.description || l.unit_price).length);
     return t;
   }
 
@@ -185,7 +186,12 @@ export function mountLineEditor(form, { lines, items, extraTotals = () => '', on
 
   tbody.addEventListener('click', (e) => {
     const tr = e.target.closest('tr');
-    if (e.target.closest('[data-remove]')) {
+    if (e.target.closest('[data-dup]')) {
+      const copy = read()[[...tbody.rows].indexOf(tr)];
+      const clone = row(copy);
+      tr.after(clone);
+      autoGrow(clone.querySelector('textarea'));
+    } else if (e.target.closest('[data-remove]')) {
       tr.remove();
       if (!tbody.rows.length) add(blankLine(), false);
     } else if (e.target.closest('[data-move]')) {

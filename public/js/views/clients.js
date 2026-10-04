@@ -1,7 +1,8 @@
 import { api, esc, money, moneyList, date, statusChip, pageHead, empty, state, toast, confirmDialog, showErrors, field, input, select, textarea, qs, go } from '../ui.js';
+import { setLeaveGuard } from '../ui.js';
 import { ppmToPercent, isCurrency } from '../lib/money.js';
-import { rowLinks } from './dashboard.js';
-import { COMMON_CURRENCIES } from './documents.js';
+import { rowLinks } from '../ui.js';
+import { COMMON_CURRENCIES, bindSaveKeys } from './documents.js';
 
 export async function clientListView({ el, query }) {
   const clients = await api(`/clients${qs({ q: query.q, archived: query.archived })}`);
@@ -156,7 +157,7 @@ export async function clientEditView({ el }, id) {
   el.innerHTML = `
     ${pageHead(c ? 'Edit client' : 'New client', c ? c.name : 'Add a client', `
       <a class="btn btn-quiet" href="#/clients${c ? `/${c.id}` : ''}">Cancel</a>
-      <button class="cta" type="submit" form="client-form">${c ? 'Save client' : 'Add client'}</button>`)}
+      <button class="cta" type="submit" form="client-form" data-mode="save">${c ? 'Save client' : 'Add client'}</button>`)}
     <form id="client-form" class="form-grid" novalidate>
       ${field('Contact name', input('name', v.name, 'required maxlength="120"'), { span: 6 })}
       ${field('Company', input('company', v.company, 'maxlength="120"'), { span: 6 })}
@@ -176,6 +177,10 @@ export async function clientEditView({ el }, id) {
       ${field('Internal notes', textarea('notes', v.notes, 'maxlength="4000" rows="4"'), { span: 12, hint: 'Never shown to the client.' })}
     </form>`;
   const form = el.querySelector('#client-form');
+  let dirty = false;
+  form.addEventListener('input', () => (dirty = true));
+  setLeaveGuard(() => dirty);
+  bindSaveKeys(form, 'save');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(form));
@@ -183,6 +188,7 @@ export async function clientEditView({ el }, id) {
     body.default_tax_rate_id = body.default_tax_rate_id ? Number(body.default_tax_rate_id) : null;
     try {
       const saved = await api(c ? `/clients/${c.id}` : '/clients', { method: c ? 'PUT' : 'POST', body });
+      dirty = false;
       toast(c ? 'Client saved' : 'Client added');
       go(`/clients/${saved.id}`);
     } catch (err) {
