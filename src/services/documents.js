@@ -4,7 +4,7 @@ import { computeDocument, invoiceStatus, estimateStatus, quantityToMilli } from 
 import { addDays, isDate } from '../../public/js/lib/dates.js';
 import { toMinor, percentToBps, fromMinor } from '../../public/js/lib/money.js';
 
-export const PAYMENT_METHODS = ['bank_transfer', 'card', 'cash', 'check', 'crypto', 'paypal', 'stripe', 'other'];
+export const PAYMENT_METHODS = ['bank_transfer', 'zelle', 'cash_app', 'venmo', 'paypal', 'upi', 'crypto', 'card', 'cash', 'check', 'stripe', 'other'];
 const MAX_LINES = 200;
 
 export const newToken = () => randomBytes(18).toString('base64url');
@@ -127,6 +127,7 @@ export function documentsService(ctx) {
     doc.lines = db.prepare('SELECT * FROM document_lines WHERE document_id = ? ORDER BY position').all(id);
     doc.payments = db.prepare('SELECT * FROM payments WHERE document_id = ? ORDER BY date, id').all(id);
     doc.client = db.prepare('SELECT * FROM clients WHERE id = ?').get(doc.client_id);
+    doc.reports = db.prepare("SELECT * FROM payment_reports WHERE document_id = ? AND status = 'pending' ORDER BY reported_at").all(id);
     // Issued documents show the client and business exactly as they were at issue.
     doc.bill_to = doc.client_snapshot || snapshotClient(doc.client);
     doc.from = doc.business_snapshot || ctx.settings.get().business;

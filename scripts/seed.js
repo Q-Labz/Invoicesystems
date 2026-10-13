@@ -30,6 +30,16 @@ settings.update({
     payment_instructions: 'Bank transfer\nAccount 000123456 · Routing 021000021\nReference the invoice number.',
   },
   defaults: { notes: 'Thank you for the work.', terms: 'Payment due by the date shown. Late balances accrue 1.5% per month.' },
+  // Demo handles only. Replace with your own in Settings → Get paid.
+  payments: {
+    zelle: 'pay@7labz.example',
+    zelle_name: '7LABZ LLC',
+    cash_app: 'sevenlabzdemo',
+    venmo: 'sevenlabz-demo',
+    sepa_name: '7LABZ',
+    sepa_iban: 'DE89370400440532013000',
+    crypto: [{ label: 'USDC on Base', address: '0x0000000000000000000000000000000000007777' }],
+  },
 });
 
 const salesTax = taxRates.create({ name: 'NY sales tax', rate: '8.875' });

@@ -161,6 +161,24 @@ const MIGRATIONS = [
   );
   CREATE INDEX activity_entity ON activity(entity, entity_id);
   `,
+  // v2: clients can report a direct payment (Zelle, Cash App, bank...) from the invoice link;
+  // the owner confirms it once the money is in the account.
+  `
+  CREATE TABLE payment_reports (
+    id          INTEGER PRIMARY KEY,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    method      TEXT NOT NULL,
+    amount      INTEGER NOT NULL CHECK (amount > 0),
+    payer       TEXT NOT NULL DEFAULT '',
+    reference   TEXT NOT NULL DEFAULT '',
+    note        TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','confirmed','dismissed')),
+    payment_id  INTEGER REFERENCES payments(id) ON DELETE SET NULL,
+    reported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    resolved_at TEXT
+  );
+  CREATE INDEX payment_reports_doc ON payment_reports(document_id, status);
+  `
 ];
 
 export function openDatabase(file) {

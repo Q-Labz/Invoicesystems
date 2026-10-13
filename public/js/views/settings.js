@@ -6,6 +6,7 @@ import { setLeaveGuard } from '../ui.js';
 export async function settingsView({ el, refresh }) {
   const [s, taxRates, meta] = await Promise.all([api('/settings'), api('/tax-rates?archived=1'), api('/meta')]);
   const b = s.business;
+  const p = s.payments;
   const n = s.numbering;
   const d = s.defaults;
   const currencies = [...new Set([d.currency, ...COMMON_CURRENCIES])].filter(isCurrency);
@@ -43,6 +44,32 @@ export async function settingsView({ el, refresh }) {
         </div>
       </section>
 
+      <section class="section" id="get-paid">
+        <h2>Get paid</h2>
+        <p class="hint">Each method you fill in appears on the client's invoice link with the exact amount and invoice number, as a one-tap link or a QR code. Money goes straight to your account; the app never holds it. Leave a field empty to hide that method.</p>
+        <div class="form-grid mt-2">
+          ${field('Zelle email or phone', input('payments.zelle', p.zelle, 'maxlength="120" placeholder="pay@yourbusiness.com"'), { span: 6, hint: 'USD invoices. Usually arrives within minutes.' })}
+          ${field('Name on Zelle', input('payments.zelle_name', p.zelle_name, 'maxlength="80"'), { span: 6, hint: 'So the client sees who they are paying.' })}
+          ${field('Cash App $Cashtag', input('payments.cash_app', p.cash_app ? `$${p.cash_app}` : '', 'maxlength="21" placeholder="$yourtag"'), { span: 4, hint: 'USD. Instant.' })}
+          ${field('Venmo username', input('payments.venmo', p.venmo ? `@${p.venmo}` : '', 'maxlength="31" placeholder="@yourbusiness"'), { span: 4, hint: 'USD. Instant.' })}
+          ${field('PayPal.me name', input('payments.paypal', p.paypal, 'maxlength="20" placeholder="yourbusiness"'), { span: 4, hint: 'Many currencies. Instant to your PayPal balance.' })}
+          ${field('SEPA account holder', input('payments.sepa_name', p.sepa_name, 'maxlength="70"'), { span: 4, hint: 'EUR invoices get a GiroCode QR.' })}
+          ${field('IBAN', input('payments.sepa_iban', p.sepa_iban, 'maxlength="42" autocomplete="off"'), { span: 6 })}
+          ${field('BIC', input('payments.sepa_bic', p.sepa_bic, 'maxlength="11"'), { span: 2 })}
+          ${field('UPI ID', input('payments.upi_vpa', p.upi_vpa, 'maxlength="256" placeholder="name@bank"'), { span: 6, hint: 'INR invoices. Instant.' })}
+          ${field('Name on UPI', input('payments.upi_name', p.upi_name, 'maxlength="80"'), { span: 6 })}
+        </div>
+        <h3 class="mt-3">Crypto wallets</h3>
+        <p class="hint">Name the coin and network exactly (e.g. "USDC on Base"). A payment sent on the wrong network is lost.</p>
+        <div class="form-grid mt-1">
+          ${[0, 1, 2, 3].map((i) => `
+          ${field(i ? '' : 'Coin and network', input(`payments.crypto.${i}.label`, p.crypto[i]?.label, 'maxlength="40" data-crypto="label"'), { span: 4 })}
+          ${field(i ? '' : 'Wallet address', input(`payments.crypto.${i}.address`, p.crypto[i]?.address, 'maxlength="128" autocomplete="off" spellcheck="false" data-crypto="address"'), { span: 8 })}`).join('')}
+        </div>
+        <label class="check mt-2"><input type="checkbox" name="payments.client_reports" ${p.client_reports ? 'checked' : ''}> Let clients tell you they've paid ("I've paid" button on the invoice link)</label>
+        <p class="hint mt-1">Bank transfer details come from "Payment instructions" above.</p>
+      </section>
+
       <section class="section">
         <h2>Defaults for new documents</h2>
         <div class="form-grid mt-2">
@@ -78,9 +105,14 @@ export async function settingsView({ el, refresh }) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     clearErrors(form);
-    const body = { business: {}, numbering: {}, defaults: {} };
+    const body = { business: {}, numbering: {}, defaults: {}, payments: { crypto: [] } };
     for (const elx of form.elements) {
       if (!elx.name) continue;
+      const cm = /^payments\.crypto\.(\d)\.(label|address)$/.exec(elx.name);
+      if (cm) {
+        (body.payments.crypto[cm[1]] ||= { label: '', address: '' })[cm[2]] = elx.value;
+        continue;
+      }
       const value = elx.type === 'checkbox' ? elx.checked : elx.type === 'number' ? (elx.value === '' ? undefined : Number(elx.value)) : elx.value;
       const [group, key] = elx.name.split('.');
       if (key) body[group][key] = value;

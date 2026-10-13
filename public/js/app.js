@@ -53,7 +53,7 @@ function parseHash() {
   return { path: path || '/', query: Object.fromEntries(new URLSearchParams(query)) };
 }
 
-const BADGE = { '/invoices': 'overdue', '/estimates': 'open_estimates' };
+const BADGE = { '/invoices': 'overdue', '/estimates': 'open_estimates', '/payments': 'reported' };
 
 function shell(auth) {
   root.innerHTML = `
@@ -107,7 +107,7 @@ function paintBadges() {
     const n = b[el.dataset.badge] || 0;
     el.hidden = !n;
     el.textContent = n;
-    el.title = el.dataset.badge === 'overdue' ? `${n} overdue` : `${n} awaiting a reply`;
+    el.title = { overdue: `${n} overdue`, open_estimates: `${n} awaiting a reply`, reported: `${n} reported, to confirm` }[el.dataset.badge];
   });
   const t = document.getElementById('today');
   if (t && state.meta) t.textContent = state.meta.today;

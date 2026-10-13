@@ -99,6 +99,7 @@ export function reportsService(ctx) {
       overdue,
       drafts,
       due_soon: dueSoon,
+      reported: ctx.paymentReports.list(),
       awaiting,
       setup,
       recent,

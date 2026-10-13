@@ -192,6 +192,17 @@ export async function documentDetailView(ctx, kind, id) {
     <div class="split">
       <div>${renderDocument(doc, { locale: locale() })}</div>
       <aside class="no-print stack-panels">
+        ${doc.reports?.length ? doc.reports.map((r) => `
+        <div class="panel reported" role="status">
+          <div class="eyebrow">Client reports a payment</div>
+          <div class="summary-figure">${esc(money(r.amount, doc.currency))}</div>
+          <p class="hint">${esc(methodLabel(r.method))}${r.payer ? ` · ${esc(r.payer)}` : ''}${r.reference ? ` · ${esc(r.reference)}` : ''} · ${esc(relTime(r.reported_at))}</p>
+          <p class="next-step">Check that it arrived in your ${esc(methodLabel(r.method))} account, then confirm.</p>
+          <div class="actions mt-1">
+            <button class="btn btn-solid" type="button" data-report-confirm="${r.id}">Confirm received</button>
+            <button class="btn btn-quiet" type="button" data-report-dismiss="${r.id}">Not received</button>
+          </div>
+        </div>`).join('') : ''}
         <div class="panel summary">
           <div class="summary-top">${statusChip(doc.status)}<span class="hint">${esc(next.when || '')}</span></div>
           <div class="summary-figure">${esc(money(isInvoice && st !== 'draft' ? doc.balance : doc.total, doc.currency))}</div>
@@ -327,6 +338,14 @@ export async function documentDetailView(ctx, kind, id) {
       if (more) more.open = false;
       return handlers[btn.dataset.act]?.();
     }
+    const rc = e.target.closest('[data-report-confirm]');
+    if (rc) return confirmReportDialog(doc, doc.reports.find((r) => r.id === Number(rc.dataset.reportConfirm)), refresh);
+    const rd = e.target.closest('[data-report-dismiss]');
+    if (rd) {
+      if (!(await confirmDialog('Mark as not received?', 'The report is closed and the balance stays as it is. The client is not notified.', 'Not received'))) return;
+      if (await run(() => api(`/payment-reports/${rd.dataset.reportDismiss}/dismiss`, { method: 'POST' }), 'Report closed')) refresh();
+      return;
+    }
     const del = e.target.closest('[data-del-payment]');
     if (del) {
       if (!(await confirmDialog('Remove this payment?', 'The balance goes back up by this amount. The removal is logged.', 'Remove'))) return;
@@ -397,6 +416,9 @@ function describe(ev, currency) {
     case 'accepted': return 'Marked accepted';
     case 'declined': return 'Marked declined';
     case 'share_link_rotated': return 'Share link replaced';
+    case 'payment_reported': return `Client reported ${amt(d.amount)} by ${methodLabel(d.method)}`;
+    case 'payment_report_confirmed': return 'Reported payment confirmed';
+    case 'payment_report_dismissed': return 'Reported payment marked not received';
     default: return ev.action.replace(/_/g, ' ');
   }
 }
@@ -414,6 +436,27 @@ export async function issueDialog(doc, refresh) {
   if (ok) {
     state.meta = await api('/meta');
     toast(`Issued as ${ok.number}`, false, { label: 'Email it', run: () => sendDialog(ok, refresh) });
+    refresh();
+  }
+}
+
+// Turns a client's report into a recorded payment, with the details still editable.
+export async function confirmReportDialog(doc, r, refresh) {
+  if (!r) return;
+  const ok = await dialog({
+    title: `Confirm payment on ${doc.number}`,
+    body: `<dl class="dl dialog-sum"><dt>${esc(doc.client.name)} reported</dt><dd>${esc(money(r.amount, doc.currency))}</dd></dl>
+    <div class="form-grid">
+      ${field(`Amount received ${doc.currency}`, input('amount', fromMinor(Math.min(r.amount, doc.balance), doc.currency), 'inputmode="decimal" required'), { span: 6 })}
+      ${field('Date received', input('date', state.meta.today, 'type="date" required'), { span: 6 })}
+      ${field('Method', select('method', Object.entries(METHOD_LABELS), r.method), { span: 6 })}
+      ${field('Reference', input('reference', r.reference, 'maxlength="120"'), { span: 6 })}
+    </div>`,
+    submit: 'Record payment',
+    onSubmit: (v) => api(`/payment-reports/${r.id}/confirm`, { method: 'POST', body: v }),
+  });
+  if (ok) {
+    toast(ok.status === 'paid' ? `${ok.number} paid in full` : `Payment recorded. ${money(ok.balance, ok.currency)} left.`);
     refresh();
   }
 }

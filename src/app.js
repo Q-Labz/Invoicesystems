@@ -14,6 +14,8 @@ import { documentsService, PAYMENT_METHODS, DOC_VIEW } from './services/document
 import { recurringService } from './services/recurring.js';
 import { reportsService } from './services/reports.js';
 import { exportsService } from './services/exports.js';
+import { paymentReportsService } from './services/payment-reports.js';
+import { paymentOptions } from '../public/js/lib/pay-links.js';
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 const MAX_BODY = 1024 * 1024;
@@ -62,6 +64,7 @@ export function createApp({ dbPath = ':memory:', today, password, sessionSecret 
   ctx.recurring = recurringService(ctx);
   ctx.reports = reportsService(ctx);
   ctx.exports = exportsService(ctx);
+  ctx.paymentReports = paymentReportsService(ctx);
 
   const auth = createAuth({ password, secret: sessionSecret });
   const routes = buildRoutes(ctx, auth);
@@ -180,6 +183,7 @@ function buildRoutes(ctx, auth) {
 
   // public share link — read-only, no internal fields
   add('GET', '/api/public/:token', ({ params }) => publicView(ctx, String(params.token)), { public: true });
+  add('POST', '/api/public/:token/report', ({ params, body }) => ctx.paymentReports.report(String(params.token), body), { public: true, status: 201 });
 
   // meta
   add('GET', '/api/meta', () => ({
@@ -236,6 +240,9 @@ function buildRoutes(ctx, auth) {
   // payments
   add('GET', '/api/payments', ({ query }) => ctx.documents.listPayments(query));
   add('DELETE', '/api/payments/:id', ({ params }) => ctx.documents.deletePayment(id(params)));
+  add('GET', '/api/payment-reports', ({ query }) => ctx.paymentReports.list({ status: query.status || 'pending' }));
+  add('POST', '/api/payment-reports/:id/confirm', ({ params, body }) => ctx.paymentReports.confirm(id(params), body));
+  add('POST', '/api/payment-reports/:id/dismiss', ({ params }) => ctx.paymentReports.dismiss(id(params)));
 
   // recurring
   add('GET', '/api/recurring', ({ query }) => ctx.recurring.list({ client_id: Number(query.client_id) || undefined }));
@@ -281,7 +288,8 @@ function badges(ctx) {
       `SELECT
          SUM(CASE WHEN kind = 'invoice' AND status = 'overdue' THEN 1 ELSE 0 END) AS overdue,
          SUM(CASE WHEN kind = 'invoice' AND status = 'draft' THEN 1 ELSE 0 END) AS drafts,
-         SUM(CASE WHEN kind = 'estimate' AND status = 'sent' THEN 1 ELSE 0 END) AS open_estimates
+         SUM(CASE WHEN kind = 'estimate' AND status = 'sent' THEN 1 ELSE 0 END) AS open_estimates,
+         (SELECT COUNT(*) FROM payment_reports WHERE status = 'pending') AS reported
        FROM (${DOC_VIEW}) v`,
     )
     .get({ today: ctx.today() });
@@ -289,7 +297,9 @@ function badges(ctx) {
 
 function publicView(ctx, token) {
   const doc = ctx.documents.byToken(token);
-  const { client, client_snapshot, business_snapshot, recurring_id, related, share_token, ...rest } = doc;
+  const settings = ctx.settings.get();
+  const { client, client_snapshot, business_snapshot, recurring_id, related, share_token, reports, ...rest } = doc;
+  const open = doc.kind === 'invoice' && doc.state === 'issued' && doc.balance > 0;
   return {
     document: {
       ...rest,
@@ -297,7 +307,14 @@ function publicView(ctx, token) {
       source_estimate_id: undefined,
       payments: doc.payments.map(({ id, amount, date, method }) => ({ id, amount, date, method })),
     },
-    locale: ctx.settings.get().locale,
+    pay: open
+      ? {
+          options: paymentOptions({ ...settings.payments, bank_details: doc.from?.payment_instructions || settings.business.payment_instructions }, doc),
+          can_report: !!settings.payments.client_reports,
+          reported: reports.length > 0,
+        }
+      : null,
+    locale: settings.locale,
   };
 }
 

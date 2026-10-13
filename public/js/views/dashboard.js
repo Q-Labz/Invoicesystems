@@ -1,7 +1,8 @@
 import { api, esc, money, date, statusChip, empty, state, rowLinks } from '../ui.js';
 import { diffDays } from '../lib/dates.js';
 import { revenueChart } from './charts.js';
-import { paymentDialog, issueDialog, sendDialog } from './documents.js';
+import { paymentDialog, issueDialog, sendDialog, confirmReportDialog } from './documents.js';
+import { methodLabel } from '../lib/doc-render.js';
 
 export { rowLinks };
 
@@ -16,6 +17,13 @@ export async function dashboardView({ el, refresh }) {
 
   // One queue of things that want a hand on them, most urgent first.
   const attention = [
+    ...d.reported.map((p) => ({
+      r: { id: p.document_id, kind: 'invoice', state: 'issued', number: p.number, client_name: p.client_name, title: p.payer ? `from ${p.payer}` : '', balance: p.amount, currency: p.currency },
+      rank: 0,
+      why: `Payment reported · ${methodLabel(p.method)}`,
+      act: ['confirm', 'Confirm'],
+      report: p.id,
+    })),
     ...d.overdue.map((r) => ({ r, rank: 0, why: `${diffDays(today, r.due_date)} days late`, act: ['remind', 'Remind'], alt: ['pay', 'Payment'] })),
     ...d.due_soon.map((r) => {
       const n = diffDays(r.due_date, today);
@@ -74,7 +82,7 @@ export async function dashboardView({ el, refresh }) {
 
     <section class="section" aria-labelledby="att-h">
       <div class="section-head"><h2 id="att-h">Needs attention</h2>${attention.length ? `<span class="hint">${attention.length} item${attention.length === 1 ? '' : 's'}</span>` : ''}</div>
-      ${attention.length ? `<ul class="queue">${attention.map(({ r, why, act, alt, rank }) => `
+      ${attention.length ? `<ul class="queue">${attention.map(({ r, why, act, alt, rank, report }) => `
         <li class="queue-item rank-${rank}">
           <a class="queue-main" href="${docLink(r)}">
             <span class="queue-why">${esc(why)}</span>
@@ -83,7 +91,7 @@ export async function dashboardView({ el, refresh }) {
           <span class="queue-amt num">${esc(money(r.kind === 'invoice' && r.state === 'issued' ? r.balance : r.total, r.currency))}</span>
           <span class="queue-acts">
             ${alt ? `<button class="btn btn-sm btn-quiet" type="button" data-q="${alt[0]}" data-id="${r.id}">${esc(alt[1])}</button>` : ''}
-            <button class="btn btn-sm" type="button" data-q="${act[0]}" data-id="${r.id}" data-kind="${r.kind}">${esc(act[1])}</button>
+            <button class="btn btn-sm${act[0] === 'confirm' ? ' btn-solid' : ''}" type="button" data-q="${act[0]}" data-id="${r.id}" data-kind="${r.kind}" ${report ? `data-report="${report}"` : ''}>${esc(act[1])}</button>
           </span>
         </li>`).join('')}</ul>` : `<div class="clear-state"><p>Nothing needs you. Every issued invoice is on time.</p></div>`}
     </section>
@@ -119,6 +127,7 @@ export async function dashboardView({ el, refresh }) {
     if (action === 'pay') paymentDialog(doc, refresh, false);
     else if (action === 'issue') issueDialog(doc, refresh);
     else if (action === 'remind') sendDialog(doc, refresh, { reminder: true });
+    else if (action === 'confirm') confirmReportDialog(doc, doc.reports.find((x) => x.id === Number(b.dataset.report)), refresh);
   });
 }
 

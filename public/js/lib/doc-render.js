@@ -129,11 +129,15 @@ export function trimQty(q) {
 
 export const METHOD_LABELS = {
   bank_transfer: 'Bank transfer',
+  zelle: 'Zelle',
+  cash_app: 'Cash App',
+  venmo: 'Venmo',
+  paypal: 'PayPal',
+  upi: 'UPI',
+  crypto: 'Crypto',
   card: 'Card',
   cash: 'Cash',
   check: 'Check',
-  crypto: 'Crypto',
-  paypal: 'PayPal',
   stripe: 'Stripe',
   other: 'Other',
 };

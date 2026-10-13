@@ -6,7 +6,7 @@ Node 22, SQLite, zero npm dependencies.
 ```sh
 npm run seed     # optional: demo clients, invoices, payments, a retainer
 npm start        # http://127.0.0.1:7777
-npm test         # 31 tests: money math, lifecycle, HTTP, auth
+npm test         # 36 tests: money math, lifecycle, payments, HTTP, auth
 ```
 
 ## What it does
@@ -47,6 +47,37 @@ basis), top clients. CSV exports for invoices, estimates and payments, plus a fu
 **Sharing.** Each issued document has a read-only link (`/p/<token>`) for the client,
 with print and save-as-PDF. Drafts are never public. The link can be replaced, which
 kills the old one. The email action opens your mail app with the link and logs the send.
+
+## Getting paid
+
+The app takes no cut and holds no money. Each issued invoice's client link (`/p/<token>`)
+carries a **Pay** panel built from Settings → Get paid. Every option is filled in with the exact
+balance and the invoice number as the reference, so the money lands straight in your account:
+
+| Method | Currencies | How the client pays | Arrives |
+|---|---|---|---|
+| Cash App | USD | One-tap link or QR, amount filled in | Instant |
+| Venmo | USD | One-tap link or QR, amount and note filled in | Instant |
+| Zelle | USD | Your email or phone, amount and memo to copy | Minutes |
+| PayPal.me | 23 currencies | One-tap link or QR, amount filled in | Instant to PayPal |
+| SEPA | EUR | GiroCode QR (EPC069-12) that banking apps scan into a filled transfer | Seconds on SEPA Instant |
+| UPI | INR | `upi://` link or QR | Instant |
+| Crypto | any | Wallet address and QR, value to send | Network time |
+| Bank transfer | any | Your payment instructions, amount, reference | Depends on the rail |
+
+Methods that don't fit an invoice's currency are hidden. Handles, IBANs (mod-97 checksum)
+and wallet addresses are validated when you save them.
+
+**Card payments are not possible without a processor.** Card networks only settle through a
+licensed acquirer, so no standalone app can charge a card.
+
+**Confirming.** Because no processor sits in the middle, the app cannot see your accounts. The
+client taps **I've paid**, picks the method and adds a transaction ID. The invoice then shows
+under **Needs attention** on the overview and on Payments, with a sidebar badge. One click on
+**Confirm received** (amount, date and reference stay editable) records the payment and marks the
+invoice paid. **Not received** closes the report and leaves the balance alone. A report never
+changes the balance on its own. Each invoice holds at most five pending reports, and reports can
+be switched off in Settings.
 
 ## Working in it
 
@@ -128,7 +159,9 @@ with `details` keyed by field, using `lines.N.field` for line items.
 | `/reports/{dashboard,aging,revenue,tax,clients}` | reporting |
 | `/export/{invoices,estimates,payments}.csv`, `/export/backup.json` | exports |
 | `GET/PUT /settings`, `PUT /sequences/:kind` | business profile, numbering, defaults |
-| `GET /public/:token` | the client-facing view (no auth, no internal fields) |
+| `GET /public/:token` | the client-facing view and its pay options (no auth, no internal fields) |
+| `POST /public/:token/report` | client reports a direct payment: `{ method, amount?, payer, reference }` |
+| `GET /payment-reports`, `POST /payment-reports/:id/{confirm,dismiss}` | owner reviews reported payments |
 
 ## Brand
 
