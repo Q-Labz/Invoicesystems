@@ -33,7 +33,9 @@ function payPanel(pay, balance, doc) {
         <div class="eyebrow">Pay ${esc(doc.number)}</div>
         <h2 id="pay-h" class="pay-amount">${esc(balance)}</h2>
       </div>
-      <p class="hint">Paid directly to ${esc(doc.from?.name || 'us')}. No card details are taken here.</p>
+      <p class="hint">${opts[0].method === 'quickbooks'
+        ? `Card and bank details go only to QuickBooks' secure checkout, never this page.`
+        : `Paid directly to ${esc(doc.from?.name || 'us')}. No card details are taken here.`}</p>
     </div>
     <div class="tabs pay-tabs" role="tablist">
       ${opts.map((o, i) => `<button type="button" role="tab" id="pt-${i}" aria-controls="pp-${i}" aria-selected="${i === 0}" ${i === 0 ? 'aria-current="true"' : 'tabindex="-1"'}>${esc(o.label)}</button>`).join('')}
@@ -48,14 +50,14 @@ function payPanel(pay, balance, doc) {
         ${o.qr ? `<figure class="pay-qr">${qrSvg(o.qr, { label: `${o.label} QR code` })}<figcaption class="hint">Scan with your phone</figcaption></figure>` : ''}
       </div>
       <p class="hint">${esc(o.speed)}${o.note ? `. ${esc(o.note)}` : ''}</p>
-      ${o.href ? `<a class="btn btn-solid" href="${esc(o.href)}" target="_blank" rel="noopener">Open ${esc(o.label)} with ${esc(balance)} filled in ↗</a>` : ''}
+      ${o.href ? `<a class="btn btn-solid" href="${esc(o.href)}" target="_blank" rel="noopener">${esc(o.cta || `Open ${o.label} with ${balance} filled in`)} ↗</a>` : ''}
     </div>`).join('')}
-    ${pay.can_report ? `
+    ${pay.can_report && opts.some((o) => o.method !== 'quickbooks') ? `
     <details class="pay-report">
-      <summary class="cta">I've paid</summary>
+      <summary class="cta">${opts[0].method === 'quickbooks' ? 'Paid another way?' : "I've paid"}</summary>
       <form id="report" novalidate>
         <div class="form-grid">
-          <label class="field span-6"><span>Paid with</span><select name="method">${opts.map((o, i) => `<option value="${esc(o.method)}" ${i === 0 ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>
+          <label class="field span-6"><span>Paid with</span><select name="method">${opts.filter((o) => o.method !== 'quickbooks').map((o) => `<option value="${esc(o.method)}">${esc(o.label)}</option>`).join('')}</select></label>
           <label class="field span-6"><span>Your name</span><input name="payer" maxlength="120" autocomplete="name"></label>
           <label class="field span-12"><span>Confirmation or transaction ID</span><input name="reference" maxlength="120" placeholder="Optional, helps match the payment"></label>
         </div>
@@ -76,7 +78,8 @@ function bindPay(pay, doc) {
       document.getElementById(`pp-${j}`).hidden = !on;
     });
     const sel = root.querySelector('#report select[name=method]');
-    if (sel) sel.selectedIndex = i;
+    const m = pay.options[i]?.method;
+    if (sel && [...sel.options].some((o) => o.value === m)) sel.value = m;
   };
   tabs.forEach((t, i) => {
     t.addEventListener('click', () => select(i));

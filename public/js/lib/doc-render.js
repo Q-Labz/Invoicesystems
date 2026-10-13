@@ -135,6 +135,7 @@ export const METHOD_LABELS = {
   paypal: 'PayPal',
   upi: 'UPI',
   crypto: 'Crypto',
+  quickbooks: 'QuickBooks',
   card: 'Card',
   cash: 'Cash',
   check: 'Check',

@@ -6,7 +6,7 @@ Node 22, SQLite, zero npm dependencies.
 ```sh
 npm run seed     # optional: demo clients, invoices, payments, a retainer
 npm start        # http://127.0.0.1:7777
-npm test         # 36 tests: money math, lifecycle, payments, HTTP, auth
+npm test         # 44 tests: money math, lifecycle, payments, QuickBooks, HTTP, auth
 ```
 
 ## What it does
@@ -68,8 +68,8 @@ balance and the invoice number as the reference, so the money lands straight in 
 Methods that don't fit an invoice's currency are hidden. Handles, IBANs (mod-97 checksum)
 and wallet addresses are validated when you save them.
 
-**Card payments are not possible without a processor.** Card networks only settle through a
-licensed acquirer, so no standalone app can charge a card.
+**Card payments need a processor.** Card networks only settle through a licensed acquirer, so
+cards go through QuickBooks Payments (below).
 
 **Confirming.** Because no processor sits in the middle, the app cannot see your accounts. The
 client taps **I've paid**, picks the method and adds a transaction ID. The invoice then shows
@@ -78,6 +78,45 @@ under **Needs attention** on the overview and on Payments, with a sidebar badge.
 invoice paid. **Not received** closes the report and leaves the balance alone. A report never
 changes the balance on its own. Each invoice holds at most five pending reports, and reports can
 be switched off in Settings.
+
+## QuickBooks Online (card and bank payments)
+
+With QuickBooks connected, every issued invoice is copied to your QuickBooks company with online
+card and ACH payment switched on, and the client's link leads with **Pay by card or bank**, which
+opens QuickBooks' secure checkout. When the client pays there, the payment is recorded here and the
+invoice is marked paid on its own. No confirmation click is needed.
+
+- **Both ledgers agree.** The QuickBooks copy carries the same total to the cent: lines go over as
+  amounts, tax as its own line, the discount as a discount line. If QuickBooks computes a different
+  total (usually because automatic sales tax added its own tax), the invoice is flagged with the
+  reason and the card button is withheld until it matches.
+- **Payments flow both ways.** Card or bank payments made in QuickBooks are pulled in by webhook
+  (seconds) or, without one, a check every 3 minutes. Payments you record here (Zelle, cash, a
+  confirmed report) are copied to QuickBooks so its pay page shows the right balance. Each
+  QuickBooks payment is recorded once, keyed by its QuickBooks id.
+- **Edits and voids follow.** Revising an issued invoice updates the QuickBooks copy, and voiding
+  here voids it there. Refunds are recorded here only; record them in QuickBooks too.
+- **Currency.** QuickBooks Payments takes your company's home currency. Other-currency invoices are
+  skipped, say why, and keep the direct methods.
+- **Existing invoices.** On connect, open invoices are copied over. An invoice already in
+  QuickBooks with the same number for the same customer is linked rather than duplicated.
+- **Money timing** is QuickBooks Payments' own: check your QuickBooks Payments account for deposit
+  speed and fees, including any instant-deposit option.
+
+**Setup**
+
+1. At developer.intuit.com create an app with the Accounting scope. Add the redirect URI
+   `https://YOUR-DOMAIN/api/qbo/callback` (Intuit requires HTTPS for production).
+2. Set `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, and `QBO_ENVIRONMENT=production`
+   for live money (the default `sandbox` uses Intuit's test company). Restart.
+3. Settings → QuickBooks Online → **Connect QuickBooks**, and sign in on Intuit's site.
+4. Optional, for near-instant updates: in the Intuit app add a webhook to
+   `https://YOUR-DOMAIN/api/qbo/webhook` for Payment events, and set `QBO_WEBHOOK_VERIFIER` to
+   its verifier token. Webhook bodies are checked against the `intuit-signature` HMAC.
+
+QuickBooks Payments must be active on the company for the pay link to appear. Tokens are stored
+encrypted (AES-256-GCM, keyed from the client secret), refreshed automatically, and never included
+in backups. **Disconnect** revokes them at Intuit.
 
 ## Working in it
 
@@ -119,6 +158,10 @@ be switched off in Settings.
 | `INVOICE_PASSWORD` | unset | Turns on sign-in. Sessions are HMAC-signed, HttpOnly, SameSite=Strict cookies, valid for 7 days. Five failures lock an IP out for 15 minutes. |
 | `SESSION_SECRET` | random per start | Set it to keep sessions across restarts. |
 | `COOKIE_SECURE` | unset | `1` behind HTTPS. |
+| `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET` | unset | Intuit app keys. Both are needed to connect QuickBooks. |
+| `QBO_REDIRECT_URI` | unset | `https://YOUR-DOMAIN/api/qbo/callback`, registered in the Intuit app. |
+| `QBO_ENVIRONMENT` | `sandbox` | `production` for real payments. |
+| `QBO_WEBHOOK_VERIFIER` | unset | Intuit webhook verifier token, for instant payment updates. |
 
 Writes accept JSON only and refuse cross-site requests (`Sec-Fetch-Site`). The CSP allows
 only same-origin scripts, plus Google Fonts.
@@ -162,6 +205,8 @@ with `details` keyed by field, using `lines.N.field` for line items.
 | `GET /public/:token` | the client-facing view and its pay options (no auth, no internal fields) |
 | `POST /public/:token/report` | client reports a direct payment: `{ method, amount?, payer, reference }` |
 | `GET /payment-reports`, `POST /payment-reports/:id/{confirm,dismiss}` | owner reviews reported payments |
+| `GET /qbo/status`, `POST /qbo/{connect,sync,disconnect}`, `POST /documents/:id/qbo` | QuickBooks connection, sync, retry one invoice |
+| `GET /qbo/callback`, `POST /qbo/webhook` | Intuit's OAuth redirect and signed webhook (public) |
 
 ## Brand
 

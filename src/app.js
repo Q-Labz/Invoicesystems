@@ -15,7 +15,9 @@ import { recurringService } from './services/recurring.js';
 import { reportsService } from './services/reports.js';
 import { exportsService } from './services/exports.js';
 import { paymentReportsService } from './services/payment-reports.js';
+import { quickbooksService } from './services/quickbooks.js';
 import { paymentOptions } from '../public/js/lib/pay-links.js';
+import { fromMinor } from '../public/js/lib/money.js';
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 const MAX_BODY = 1024 * 1024;
@@ -40,7 +42,7 @@ const SECURITY_HEADERS = {
     "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 };
 
-export function createApp({ dbPath = ':memory:', today, password, sessionSecret } = {}) {
+export function createApp({ dbPath = ':memory:', today, password, sessionSecret, qbo = {} } = {}) {
   const db = openDatabase(dbPath);
   const ctx = {
     db,
@@ -65,6 +67,7 @@ export function createApp({ dbPath = ':memory:', today, password, sessionSecret 
   ctx.reports = reportsService(ctx);
   ctx.exports = exportsService(ctx);
   ctx.paymentReports = paymentReportsService(ctx);
+  ctx.qbo = quickbooksService(ctx, qbo);
 
   const auth = createAuth({ password, secret: sessionSecret });
   const routes = buildRoutes(ctx, auth);
@@ -86,12 +89,13 @@ export function createApp({ dbPath = ':memory:', today, password, sessionSecret 
     const { route, params } = match;
     if (!route.public && !auth.check(req)) throw new HttpError(401, 'Sign in required');
     let body;
+    let raw = '';
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
       // JSON-only writes: a cross-site form cannot send application/json without a preflight.
       const site = req.headers['sec-fetch-site'];
       if (site && site !== 'same-origin' && site !== 'none') throw new HttpError(403, 'Cross-site request refused');
       const type = req.headers['content-type'] || '';
-      const raw = await readBody(req);
+      raw = await readBody(req);
       if (raw.length && !type.startsWith('application/json')) throw new HttpError(415, 'Send JSON');
       try {
         body = raw.length ? JSON.parse(raw) : {};
@@ -100,7 +104,7 @@ export function createApp({ dbPath = ':memory:', today, password, sessionSecret 
       }
     }
     const query = Object.fromEntries(url.searchParams);
-    const result = await route.handler({ params, query, body, req, res });
+    const result = await route.handler({ params, query, body, raw, req, res });
     if (res.writableEnded) return;
     if (result && result.__file) {
       res.writeHead(200, {
@@ -170,6 +174,17 @@ function matchRoute(routes, method, path) {
 function buildRoutes(ctx, auth) {
   const r = [];
   const add = (method, pattern, handler, opts = {}) => r.push({ method, ...compile(pattern), handler, ...opts });
+  // After a change to an invoice, mirror it to QuickBooks when connected. Never fails the request.
+  const afterQbo = async (doc) => {
+    if (doc?.kind !== 'invoice' || doc.state === 'draft' || !ctx.qbo.isConnected()) return doc;
+    return (await ctx.qbo.pushInvoice(doc.id)) || doc;
+  };
+  const afterLocalPayment = async (doc) => {
+    if (!ctx.qbo.isConnected() || !doc.qbo_invoice_id) return doc;
+    const last = ctx.db.prepare('SELECT MAX(id) AS id FROM payments WHERE document_id = ?').get(doc.id).id;
+    await ctx.qbo.pushPayment(doc.id, last);
+    return ctx.documents.get(doc.id);
+  };
   const id = (p) => {
     if (!Number.isInteger(p.id)) throw new HttpError(404, 'Not found');
     return p.id;
@@ -181,6 +196,35 @@ function buildRoutes(ctx, auth) {
   add('POST', '/api/auth/login', ({ req, res, body }) => auth.login(req, res, body), { public: true });
   add('POST', '/api/auth/logout', ({ res }) => auth.logout(res), { public: true });
 
+  // QuickBooks Online
+  add('GET', '/api/qbo/status', () => ctx.qbo.status());
+  add('POST', '/api/qbo/connect', () => ctx.qbo.connectUrl());
+  add('POST', '/api/qbo/disconnect', () => ctx.qbo.disconnect());
+  add('POST', '/api/qbo/sync', async () => {
+    ctx.qbo.requireConnected();
+    return ctx.qbo.sync();
+  });
+  add('POST', '/api/documents/:id/qbo', async ({ params }) => {
+    ctx.qbo.requireConnected();
+    return ctx.qbo.pushInvoice(id(params));
+  });
+  // Intuit's redirect after sign-in. A browser lands here, so it answers with a redirect, never JSON.
+  add('GET', '/api/qbo/callback', async ({ query, res }) => {
+    let to = '/#/settings?qbo=connected';
+    try {
+      await ctx.qbo.callback(query);
+      ctx.qbo.sync().catch(() => {});
+    } catch (err) {
+      to = `/#/settings?qbo_error=${encodeURIComponent(err.message)}`;
+    }
+    res.writeHead(302, { ...SECURITY_HEADERS, Location: to, 'Cache-Control': 'no-store' });
+    res.end();
+  }, { public: true });
+  add('POST', '/api/qbo/webhook', ({ raw, req }) => {
+    const { accepted } = ctx.qbo.webhook(raw, req.headers['intuit-signature']);
+    return { accepted };
+  }, { public: true });
+
   // public share link — read-only, no internal fields
   add('GET', '/api/public/:token', ({ params }) => publicView(ctx, String(params.token)), { public: true });
   add('POST', '/api/public/:token/report', ({ params, body }) => ctx.paymentReports.report(String(params.token), body), { public: true, status: 201 });
@@ -191,6 +235,7 @@ function buildRoutes(ctx, auth) {
     payment_methods: PAYMENT_METHODS,
     next_numbers: { invoice: ctx.numbering.preview('invoice'), estimate: ctx.numbering.preview('estimate') },
     badges: badges(ctx),
+    qbo: (({ configured, connected, environment, company_name }) => ({ configured, connected, environment, company_name }))(ctx.qbo.status()),
   }));
   add('GET', '/api/search', ({ query }) => ctx.documents.search(query.q));
 
@@ -224,24 +269,24 @@ function buildRoutes(ctx, auth) {
   add('GET', '/api/documents', ({ query }) => ctx.documents.list(query));
   add('POST', '/api/documents', ({ body }) => ctx.documents.create(body), { status: 201 });
   add('GET', '/api/documents/:id', ({ params }) => ctx.documents.get(id(params)));
-  add('PUT', '/api/documents/:id', ({ params, body }) => ctx.documents.update(id(params), body));
+  add('PUT', '/api/documents/:id', async ({ params, body }) => afterQbo(ctx.documents.update(id(params), body)));
   add('DELETE', '/api/documents/:id', ({ params }) => ctx.documents.remove(id(params)));
   add('GET', '/api/documents/:id/activity', ({ params }) => ctx.documents.activity(id(params)));
-  add('POST', '/api/documents/:id/issue', ({ params, body }) => ctx.documents.issue(id(params), body));
-  add('POST', '/api/documents/:id/void', ({ params, body }) => ctx.documents.void(id(params), body));
+  add('POST', '/api/documents/:id/issue', async ({ params, body }) => afterQbo(ctx.documents.issue(id(params), body)));
+  add('POST', '/api/documents/:id/void', async ({ params, body }) => afterQbo(ctx.documents.void(id(params), body)));
   add('POST', '/api/documents/:id/duplicate', ({ params }) => ctx.documents.duplicate(id(params)), { status: 201 });
   add('POST', '/api/documents/:id/accept', ({ params }) => ctx.documents.accept(id(params)));
   add('POST', '/api/documents/:id/decline', ({ params }) => ctx.documents.decline(id(params)));
   add('POST', '/api/documents/:id/convert', ({ params }) => ctx.documents.convert(id(params)), { status: 201 });
   add('POST', '/api/documents/:id/share', ({ params }) => ctx.documents.rotateShare(id(params)));
   add('POST', '/api/documents/:id/sent', ({ params, body }) => ctx.documents.markSent(id(params), body));
-  add('POST', '/api/documents/:id/payments', ({ params, body }) => ctx.documents.addPayment(id(params), body), { status: 201 });
+  add('POST', '/api/documents/:id/payments', async ({ params, body }) => afterLocalPayment(ctx.documents.addPayment(id(params), body)), { status: 201 });
 
   // payments
   add('GET', '/api/payments', ({ query }) => ctx.documents.listPayments(query));
   add('DELETE', '/api/payments/:id', ({ params }) => ctx.documents.deletePayment(id(params)));
   add('GET', '/api/payment-reports', ({ query }) => ctx.paymentReports.list({ status: query.status || 'pending' }));
-  add('POST', '/api/payment-reports/:id/confirm', ({ params, body }) => ctx.paymentReports.confirm(id(params), body));
+  add('POST', '/api/payment-reports/:id/confirm', async ({ params, body }) => afterLocalPayment(ctx.paymentReports.confirm(id(params), body)));
   add('POST', '/api/payment-reports/:id/dismiss', ({ params }) => ctx.paymentReports.dismiss(id(params)));
 
   // recurring
@@ -251,7 +296,7 @@ function buildRoutes(ctx, auth) {
   add('GET', '/api/recurring/:id', ({ params }) => ctx.recurring.get(id(params)));
   add('PUT', '/api/recurring/:id', ({ params, body }) => ctx.recurring.update(id(params), body));
   add('DELETE', '/api/recurring/:id', ({ params }) => ctx.recurring.remove(id(params)));
-  add('POST', '/api/recurring/:id/run', ({ params }) => ctx.recurring.runNow(id(params)), { status: 201 });
+  add('POST', '/api/recurring/:id/run', async ({ params }) => afterQbo(ctx.recurring.runNow(id(params))), { status: 201 });
 
   // reports
   add('GET', '/api/reports/dashboard', () => ctx.reports.dashboard());
@@ -298,8 +343,29 @@ function badges(ctx) {
 function publicView(ctx, token) {
   const doc = ctx.documents.byToken(token);
   const settings = ctx.settings.get();
-  const { client, client_snapshot, business_snapshot, recurring_id, related, share_token, reports, ...rest } = doc;
+  const {
+    client, client_snapshot, business_snapshot, recurring_id, related, share_token, reports,
+    qbo_invoice_id, qbo_sync_token, qbo_link, qbo_status, qbo_error, qbo_synced_at, ...rest
+  } = doc;
   const open = doc.kind === 'invoice' && doc.state === 'issued' && doc.balance > 0;
+  const options = open
+    ? paymentOptions({ ...settings.payments, bank_details: doc.from?.payment_instructions || settings.business.payment_instructions }, doc)
+    : [];
+  // Card and bank through QuickBooks Payments goes first: it confirms itself.
+  if (open && qbo_status === 'synced' && qbo_link) {
+    options.unshift({
+      method: 'quickbooks',
+      label: 'Card or bank',
+      speed: 'Secure checkout by QuickBooks. This invoice is marked paid automatically',
+      href: qbo_link,
+      qr: qbo_link,
+      cta: 'Pay by card or bank',
+      fields: [
+        { label: 'Amount', value: `${fromMinor(doc.balance, doc.currency)} ${doc.currency}`, copy: fromMinor(doc.balance, doc.currency) },
+        { label: 'Invoice', value: doc.number, copy: doc.number },
+      ],
+    });
+  }
   return {
     document: {
       ...rest,
@@ -309,7 +375,7 @@ function publicView(ctx, token) {
     },
     pay: open
       ? {
-          options: paymentOptions({ ...settings.payments, bank_details: doc.from?.payment_instructions || settings.business.payment_instructions }, doc),
+          options,
           can_report: !!settings.payments.client_reports,
           reported: reports.length > 0,
         }

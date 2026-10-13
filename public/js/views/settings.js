@@ -3,8 +3,8 @@ import { ppmToPercent, isCurrency } from '../lib/money.js';
 import { COMMON_CURRENCIES, bindSaveKeys } from './documents.js';
 import { setLeaveGuard } from '../ui.js';
 
-export async function settingsView({ el, refresh }) {
-  const [s, taxRates, meta] = await Promise.all([api('/settings'), api('/tax-rates?archived=1'), api('/meta')]);
+export async function settingsView({ el, refresh, query = {} }) {
+  const [s, taxRates, meta, qbo] = await Promise.all([api('/settings'), api('/tax-rates?archived=1'), api('/meta'), api('/qbo/status')]);
   const b = s.business;
   const p = s.payments;
   const n = s.numbering;
@@ -83,6 +83,11 @@ export async function settingsView({ el, refresh }) {
       </section>
     </form>
 
+    <section class="section" id="quickbooks" aria-labelledby="qbo-h">
+      <div class="section-head"><h2 id="qbo-h">QuickBooks Online</h2>${qbo.connected ? '<span class="status status-active">connected</span>' : ''}</div>
+      ${qboPanel(qbo)}
+    </section>
+
     <section class="section">
       <div class="section-head"><h2>Tax rates</h2><button class="btn" type="button" data-new-tax>Add rate</button></div>
       <p class="hint">Documents store the rate they were issued with, so changing a rate never rewrites history.</p>
@@ -147,6 +152,34 @@ export async function settingsView({ el, refresh }) {
     }),
   );
 
+  if (query.qbo === 'connected') toast('QuickBooks connected. Open invoices are being copied over.');
+  if (query.qbo_error) toast(query.qbo_error, true);
+  el.querySelector('#quickbooks')?.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-qbo]');
+    if (!b) return;
+    b.disabled = true;
+    try {
+      if (b.dataset.qbo === 'connect') {
+        location.href = (await api('/qbo/connect', { method: 'POST' })).url;
+        return;
+      }
+      if (b.dataset.qbo === 'sync') {
+        const r = await api('/qbo/sync', { method: 'POST' });
+        toast(`Checked QuickBooks. ${r.recorded} payment${r.recorded === 1 ? '' : 's'} recorded, ${r.pushed} invoice${r.pushed === 1 ? '' : 's'} copied.`);
+      }
+      if (b.dataset.qbo === 'disconnect') {
+        if (!(await confirmDialog('Disconnect QuickBooks?', 'Clients lose the card and bank button. Invoices and payments already in QuickBooks stay there.', 'Disconnect'))) return;
+        await api('/qbo/disconnect', { method: 'POST' });
+        toast('QuickBooks disconnected');
+      }
+      refresh();
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      b.disabled = false;
+    }
+  });
+
   const reloadTaxes = async () => {
     state.taxRates = await api('/tax-rates');
     refresh();
@@ -184,4 +217,43 @@ export async function settingsView({ el, refresh }) {
       toast(err.message, true);
     }
   });
+}
+
+function qboPanel(q) {
+  if (!q.configured) {
+    return `<div class="panel">
+      <p>Card and bank payments through QuickBooks Payments. Each issued invoice is copied to QuickBooks with online payment switched on, the client's link gets a <strong>Pay by card or bank</strong> button, and payments come back here on their own.</p>
+      <p class="hint">The server needs an Intuit app before it can connect:</p>
+      <ol class="setup-steps">
+        <li>At developer.intuit.com, create an app with the <span class="mono">Accounting</span> scope.</li>
+        <li>Add this redirect URI under Keys &amp; OAuth: <span class="mono">https://YOUR-DOMAIN/api/qbo/callback</span></li>
+        <li>Set <span class="mono">QBO_CLIENT_ID</span>, <span class="mono">QBO_CLIENT_SECRET</span>, <span class="mono">QBO_REDIRECT_URI</span> and, for live payments, <span class="mono">QBO_ENVIRONMENT=production</span>. Restart.</li>
+        <li>Optional, for instant updates: add a webhook to <span class="mono">https://YOUR-DOMAIN/api/qbo/webhook</span> for Payment events and set <span class="mono">QBO_WEBHOOK_VERIFIER</span>.</li>
+      </ol>
+    </div>`;
+  }
+  if (!q.connected) {
+    return `<div class="panel">
+      <p>Connect the QuickBooks company that has QuickBooks Payments turned on. You sign in on Intuit's site; this app never sees your password.</p>
+      <p class="hint">Environment: <span class="mono">${esc(q.environment)}</span>${q.environment === 'sandbox' ? ' (test company, no real money)' : ''}</p>
+      <button class="btn btn-solid mt-1" type="button" data-qbo="connect">Connect QuickBooks</button>
+    </div>`;
+  }
+  return `<div class="panel">
+    <dl class="dl qbo-dl">
+      <dt>Company</dt><dd>${esc(q.company_name || q.realm_id)}</dd>
+      <dt>Environment</dt><dd>${esc(q.environment)}</dd>
+      <dt>Currency</dt><dd>${esc(q.home_currency || '—')}</dd>
+      <dt>Invoices in QuickBooks</dt><dd>${q.synced}${q.errors ? ` · ${q.errors} need attention` : ''}</dd>
+      <dt>Payment updates</dt><dd>${q.webhooks ? 'Instant (webhook)' : 'Every 3 minutes'}</dd>
+      <dt>Last check</dt><dd>${q.last_sync ? esc(new Date(q.last_sync).toLocaleString()) : 'Not yet'}</dd>
+      <dt>Reconnect by</dt><dd>${q.refresh_expires ? esc(new Date(q.refresh_expires).toLocaleDateString()) : '—'}</dd>
+    </dl>
+    ${q.last_error ? `<p class="notice mt-2">${esc(q.last_error)}</p>` : ''}
+    <p class="hint mt-2">Invoices in ${esc(q.home_currency || 'your home currency')} are copied to QuickBooks when issued. Card and bank payments made there are recorded here automatically. Payments you record here are copied back.</p>
+    <div class="actions mt-1">
+      <button class="btn" type="button" data-qbo="sync">Check now</button>
+      <button class="btn btn-quiet" type="button" data-qbo="disconnect">Disconnect</button>
+    </div>
+  </div>`;
 }

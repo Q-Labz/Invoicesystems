@@ -4,7 +4,7 @@ import { computeDocument, invoiceStatus, estimateStatus, quantityToMilli } from 
 import { addDays, isDate } from '../../public/js/lib/dates.js';
 import { toMinor, percentToBps, fromMinor } from '../../public/js/lib/money.js';
 
-export const PAYMENT_METHODS = ['bank_transfer', 'zelle', 'cash_app', 'venmo', 'paypal', 'upi', 'crypto', 'card', 'cash', 'check', 'stripe', 'other'];
+export const PAYMENT_METHODS = ['bank_transfer', 'zelle', 'cash_app', 'venmo', 'paypal', 'upi', 'crypto', 'quickbooks', 'card', 'cash', 'check', 'stripe', 'other'];
 const MAX_LINES = 200;
 
 export const newToken = () => randomBytes(18).toString('base64url');
@@ -503,6 +503,31 @@ export function documentsService(ctx) {
     });
   }
 
+  // Money that already moved elsewhere (a QuickBooks payment). Idempotent on external_id, and
+  // never refused for exceeding the balance: the money is real, so it is recorded and flagged.
+  function recordExternal(id, { amount, date, method, reference = '', note = '', external_id }) {
+    return ctx.tx(() => {
+      if (!external_id) throw new Error('external_id required');
+      const seen = db.prepare('SELECT id FROM payments WHERE external_id = ?').get(external_id);
+      if (seen) return { duplicate: true, payment_id: seen.id };
+      const doc = row(id);
+      if (doc.kind !== 'invoice' || doc.state !== 'issued') {
+        ctx.log('document', id, 'external_payment_unmatched', { external_id, amount, currency: doc.currency, state: doc.state });
+        return { unmatched: true };
+      }
+      const { lastInsertRowid } = db
+        .prepare('INSERT INTO payments (document_id, amount, date, method, reference, note, external_id) VALUES (?,?,?,?,?,?,?)')
+        .run(id, amount, date, method, reference, note, external_id);
+      const overpaid = amount > doc.balance;
+      ctx.log('payment', lastInsertRowid, 'recorded', { document_id: id, number: doc.number, amount, currency: doc.currency, method, source: external_id.split(':')[0], overpaid });
+      return { payment_id: Number(lastInsertRowid), overpaid };
+    });
+  }
+
+  function setExternalId(paymentId, externalId) {
+    db.prepare('UPDATE payments SET external_id = ? WHERE id = ?').run(externalId, paymentId);
+  }
+
   function listPayments(query = {}) {
     const v = new Checker(query).date('from').date('to').int('client_id', { min: 1 }).int('limit', { min: 1, max: 1000, def: 200 }).done();
     const where = ['1 = 1'];
@@ -536,7 +561,7 @@ export function documentsService(ctx) {
     list, search, get, byToken, activity, create, update, remove, issue, void: voidDoc, duplicate,
     accept: (id) => setEstimateState(id, 'accepted'),
     decline: (id) => setEstimateState(id, 'declined'),
-    convert, rotateShare, markSent, addPayment, listPayments, deletePayment, validateLines,
+    convert, rotateShare, markSent, addPayment, recordExternal, setExternalId, listPayments, deletePayment, validateLines,
     status: (d) => (d.kind === 'invoice' ? invoiceStatus(d, ctx.today()) : estimateStatus(d, ctx.today())),
   };
 }

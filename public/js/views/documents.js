@@ -217,6 +217,7 @@ export async function documentDetailView(ctx, kind, id) {
             <dt>Paid · ${pct}%</dt><dd>${esc(money(doc.paid, doc.currency))}</dd>
           </dl>` : ''}
           ${next.text ? `<p class="next-step">${esc(next.text)}</p>` : ''}
+          ${isInvoice && st !== 'draft' && state.meta.qbo?.connected ? qboLine(doc) : ''}
           ${doc.void_reason ? `<p class="hint">Void: ${esc(doc.void_reason)}</p>` : ''}
           <p class="hint mt-1"><a href="#/clients/${doc.client_id}">${esc(doc.client.name)} · client record</a></p>
         </div>
@@ -295,6 +296,13 @@ export async function documentDetailView(ctx, kind, id) {
     refund: () => paymentDialog(doc, refresh, true),
     send: () => sendDialog(doc, refresh),
     remind: () => sendDialog(doc, refresh, { reminder: true }),
+    qbo: async () => {
+      const after = await run(() => api(`/documents/${id}/qbo`, { method: 'POST' }));
+      if (after) {
+        toast(after.qbo_status === 'synced' ? 'Copied to QuickBooks' : after.qbo_error || 'QuickBooks did not accept it', after.qbo_status !== 'synced');
+        refresh();
+      }
+    },
     duplicate: async () => {
       const copy = await run(() => api(`/documents/${id}/duplicate`, { method: 'POST' }), 'Duplicated as a draft');
       if (copy) go(`/${PLURAL[kind]}/${copy.id}/edit`);
@@ -364,6 +372,23 @@ function actionButtons(list) {
       <summary class="btn" aria-label="More actions">More</summary>
       <div class="more-menu" role="menu">${rest.map((x) => btn(x, 'more-item')).join('')}</div>
     </details>` : ''}`;
+}
+
+function qboLine(doc) {
+  const base = state.meta.qbo.environment === 'production' ? 'https://app.qbo.intuit.com' : 'https://app.sandbox.qbo.intuit.com';
+  const open = doc.qbo_invoice_id ? ` <a href="${base}/app/invoice?txnId=${encodeURIComponent(doc.qbo_invoice_id)}" target="_blank" rel="noopener">Open in QuickBooks ↗</a>` : '';
+  if (doc.qbo_status === 'synced') {
+    return `<p class="qbo-line"><span class="label">QuickBooks</span> ${doc.qbo_link ? 'Client can pay by card or bank.' : 'Copied.'}${open}</p>${doc.qbo_error ? `<p class="hint">${esc(doc.qbo_error)}</p>` : ''}`;
+  }
+  if (doc.qbo_status === 'void') return `<p class="qbo-line"><span class="label">QuickBooks</span> Voided there too.${open}</p>`;
+  if (doc.qbo_status === 'skipped') return `<p class="qbo-line"><span class="label">QuickBooks</span> ${esc(doc.qbo_error || 'Not copied')}</p>`;
+  if (doc.qbo_status === 'error') {
+    return `<div class="qbo-line qbo-error"><span class="label">QuickBooks</span> <span>${esc(doc.qbo_error || 'Sync failed')}</span>${open}
+      <button class="btn btn-sm mt-1" type="button" data-act="qbo">Retry</button></div>`;
+  }
+  return doc.state === 'issued'
+    ? `<div class="qbo-line"><span class="label">QuickBooks</span> Not copied yet. <button class="btn btn-sm" type="button" data-act="qbo">Copy now</button></div>`
+    : '';
 }
 
 // One plain sentence on what to do next, so the page always answers "now what?".

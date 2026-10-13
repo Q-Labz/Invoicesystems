@@ -18,7 +18,7 @@ export function paymentReportsService(ctx) {
     const pending = db.prepare("SELECT COUNT(*) AS n FROM payment_reports WHERE document_id = ? AND status = 'pending'").get(doc.id).n;
     if (pending >= MAX_PENDING_PER_INVOICE) throw new HttpError(429, 'A payment is already waiting for confirmation');
     const c = new Checker(input)
-      .oneOf('method', PAYMENT_METHODS.filter((m) => !['card', 'stripe', 'check', 'cash'].includes(m)), { required: true })
+      .oneOf('method', PAYMENT_METHODS.filter((m) => !['card', 'stripe', 'check', 'cash', 'quickbooks'].includes(m)), { required: true })
       .money('amount', doc.currency, { def: doc.balance })
       .str('payer', { max: 120 })
       .str('reference', { max: 120 })

@@ -595,3 +595,12 @@ body:has(.savebar) .toasts { bottom: 96px; }
 /* Share page: nothing may be wider than the phone. */
 .share-wrap > * { width: 100%; max-width: 920px; min-width: 0; }
 .pay-pane .btn-solid { white-space: normal; max-width: 100%; text-align: left; line-height: 1.4; }
+
+/* QuickBooks status */
+.qbo-line { font-family: var(--font-mono); font-size: var(--fs-1); margin: var(--s-2) 0 0; padding-top: var(--s-2); border-top: 1px solid var(--line); color: var(--bone); line-height: 1.7; }
+.qbo-line .label { margin-right: var(--s-1); }
+.qbo-line a { border-bottom: 1px solid var(--line); }
+.qbo-error { color: var(--bone); }
+.setup-steps { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--ash); line-height: 1.9; padding-left: var(--s-3); }
+.setup-steps .mono { color: var(--bone); }
+.qbo-dl { max-width: 520px; }

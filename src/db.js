@@ -178,6 +178,23 @@ const MIGRATIONS = [
     resolved_at TEXT
   );
   CREATE INDEX payment_reports_doc ON payment_reports(document_id, status);
+  `,
+  // v3: QuickBooks Online. Tokens live in integrations (encrypted); ids link our rows to QBO's.
+  `
+  CREATE TABLE integrations (
+    name       TEXT PRIMARY KEY,
+    data       TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  ALTER TABLE clients ADD COLUMN qbo_customer_id TEXT;
+  ALTER TABLE documents ADD COLUMN qbo_invoice_id TEXT;
+  ALTER TABLE documents ADD COLUMN qbo_sync_token TEXT;
+  ALTER TABLE documents ADD COLUMN qbo_link TEXT;
+  ALTER TABLE documents ADD COLUMN qbo_status TEXT;
+  ALTER TABLE documents ADD COLUMN qbo_error TEXT;
+  ALTER TABLE documents ADD COLUMN qbo_synced_at TEXT;
+  ALTER TABLE payments ADD COLUMN external_id TEXT;
+  CREATE UNIQUE INDEX payments_external ON payments(external_id) WHERE external_id IS NOT NULL;
   `
 ];
 
